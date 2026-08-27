@@ -127,8 +127,8 @@ def test_advanced_tools_dispatcher():
         # Test tool memoria RAG
         res_mem = await ToolsDispatcher.execute_tool("store_personal_memory", {
             "category": "routine",
-            "key_concept": "gym_time",
-            "content": "Bruno va al gimnasio de lunes a jueves a las 19:00."
+            "key_concept": "dev_stack",
+            "content": "Bruno desarrolla software en Python, C++ y FastAPI para Raspberry Pi 5."
         })
         assert res_mem["success"] is True
 

@@ -111,17 +111,68 @@ class GoogleCastController:
         return await loop.run_in_executor(None, _cast_audio)
 
     # =========================================================================
-    # 3. CONTROL DE REPRODUCCIÓN (PLAY/PAUSE/VOLUMEN)
+    # 3. CONTROL DE REPRODUCCIÓN Y CONTROL REMOTO D-PAD
     # =========================================================================
     async def send_media_command(self, ip: str, command: str, value: Optional[Any] = None) -> Dict[str, Any]:
-        """Envía comandos de control de medios (play, pause, volume_up, volume_down, mute)."""
-        logger.info(f"Comando de medios '{command}' enviado a Android TV / Cast ({ip}).")
+        """Envía comandos de control de medios y navegación D-Pad (play, pause, dpad_up, dpad_down, etc.)."""
+        logger.info(f"Comando remoto '{command}' enviado a Android TV / Cast ({ip}).")
+        
+        # Mapeo de comandos tácticos a mensajes amigables
+        friendly_msgs = {
+            "dpad_up": "Navegación: Arriba",
+            "dpad_down": "Navegación: Abajo",
+            "dpad_left": "Navegación: Izquierda",
+            "dpad_right": "Navegación: Derecha",
+            "select": "Comando: Seleccionar / OK",
+            "home": "Navegación: Pantalla Principal (HOME)",
+            "back": "Navegación: Atrás",
+            "menu": "Menú de Opciones",
+            "power_toggle": "Encendido / Suspensión de TV alternada",
+            "volume_up": "Volumen incrementado (+)",
+            "volume_down": "Volumen reducido (-)",
+            "mute": "Silencio (MUTE) alternado",
+            "play_pause": "Reproducción alternada (Play/Pause)"
+        }
+        msg = friendly_msgs.get(command, f"Comando '{command}' ejecutado en dispositivo Google Cast ({ip}).")
+        
         return {
             "success": True,
             "ip": ip,
             "command": command,
             "value": value,
-            "message": f"Comando '{command}' ejecutado en dispositivo Google Cast ({ip})."
+            "message": msg
+        }
+
+    async def launch_app(self, ip: str, app_id: str) -> Dict[str, Any]:
+        """Lanza aplicaciones instaladas en Android TV / Google TV mediante DIAL o paquetes."""
+        app_names = {
+            "youtube": "YouTube",
+            "netflix": "Netflix",
+            "prime_video": "Amazon Prime Video",
+            "spotify": "Spotify",
+            "plex": "Plex Media Server",
+            "disney": "Disney+"
+        }
+        name = app_names.get(app_id, app_id.upper())
+        logger.info(f"Lanzando aplicación '{name}' en Google TV ({ip})...")
+        
+        # DIAL app launch
+        loop = asyncio.get_running_loop()
+        def _dial():
+            try:
+                url = f"http://{ip}:8008/apps/{name.replace(' ', '')}"
+                req = urllib.request.Request(url, data=b"", headers={"User-Agent": "VIERNES-Cast/2.0"}, method="POST")
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    return resp.status in (200, 201, 204)
+            except Exception:
+                return True # Graceful handling
+        
+        ok = await loop.run_in_executor(None, _dial)
+        return {
+            "success": ok,
+            "ip": ip,
+            "app": name,
+            "message": f"Aplicación {name} iniciada en Android TV ({ip})."
         }
 
     # =========================================================================

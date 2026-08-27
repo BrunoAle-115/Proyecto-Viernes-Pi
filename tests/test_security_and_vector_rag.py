@@ -52,8 +52,8 @@ def test_vector_embedding_and_cosine_similarity():
             )
             await rag.insert_memory(
                 category="routine",
-                key_concept="ejercicio_gym",
-                content="Bruno va al gimnasio a entrenar pecho y espalda los martes.",
+                key_concept="desarrollo_software",
+                content="Bruno programa en Python y C++ para Raspberry Pi 5 los martes.",
                 source="test"
             )
 
@@ -62,9 +62,9 @@ def test_vector_embedding_and_cosine_similarity():
             assert len(results_pc) >= 1
             assert "PC Gamer" in results_pc[0]["content"]
 
-            results_gym = await rag.query_semantic_search("rutina gimnasio ejercicio", top_k=1)
-            assert len(results_gym) >= 1
-            assert "gimnasio" in results_gym[0]["content"]
+            results_dev = await rag.query_semantic_search("programacion codigo python", top_k=1)
+            assert len(results_dev) >= 1
+            assert "Python" in results_dev[0]["content"]
 
         asyncio.run(_run_rag())
     finally:
@@ -155,7 +155,7 @@ def test_habit_entity_extractor():
     assert HabitEntityExtractor.extract_time_target("salgo tipo 8 de la noche") == "20:00"
 
     # 2. Extracción de días
-    days1 = HabitEntityExtractor.extract_recurrence_days("voy al gym los martes y jueves")
+    days1 = HabitEntityExtractor.extract_recurrence_days("programo en python los martes y jueves")
     assert "martes" in days1 and "jueves" in days1
 
     days2 = HabitEntityExtractor.extract_recurrence_days("trabajo en el tarro de lunes a viernes")

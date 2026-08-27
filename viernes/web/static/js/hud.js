@@ -605,14 +605,20 @@ document.addEventListener("DOMContentLoaded", () => {
       all.forEach((m) => {
         const item = document.createElement("div");
         item.className = "mail-item";
+        item.style.cursor = "pointer";
+        const otpBadge = m.otp ? `<span class="badge-approved" style="background:rgba(255,183,0,0.2);color:var(--gold-stark);border-color:var(--gold-stark);">⚡ OTP: ${escapeHtml(m.otp.code)}</span>` : '<span class="badge-urgent">URGENTE</span>';
+        
         item.innerHTML = `
-          <div style="display:flex; justify-content:space-between;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
             <span style="color:var(--cyan-stark); font-weight:700;">${escapeHtml(m.source)}: ${escapeHtml(m.sender.split("<")[0])}</span>
-            <span class="badge-urgent">URGENTE</span>
+            ${otpBadge}
           </div>
-          <div style="color:#fff; font-weight:600;">${escapeHtml(m.subject)}</div>
-          <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(m.snippet)}</div>
+          <div style="color:#fff; font-weight:600; margin-top:2px;">${escapeHtml(m.subject)}</div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">${escapeHtml(m.snippet)}</div>
         `;
+        item.addEventListener("click", () => {
+          if (window.openEmailModal) window.openEmailModal(m);
+        });
         emailList.appendChild(item);
       });
     } catch (e) {}
@@ -950,7 +956,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   btnAddMemory.addEventListener("click", async () => {
-    const concept = prompt("Concepto o etiqueta de la memoria (ej: rutina_gym, comida_favorita):");
+    const concept = prompt("Concepto o etiqueta de la memoria (ej: cafe_favorito, stack_tecnologico):");
     if (!concept) return;
     const content = prompt(`Detalle a recordar para '${concept}':`);
     if (!content) return;
@@ -958,9 +964,185 @@ document.addEventListener("DOMContentLoaded", () => {
     await secureFetch("/api/memory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category: "routine", key_concept: concept, content })
+      body: JSON.stringify({ category: "preference", key_concept: concept, content })
     });
-    appendLog("MEMORIA", `Nueva rutina vectorizada en RAG: ${concept}`, "log-success");
+    appendLog("MEMORIA", `Nueva preferencia vectorizada en RAG: ${concept}`, "log-success");
     loadMemory();
   });
+
+  // =========================================================================
+  // 11. CONTROL REMOTO ANDROID TV, GOOGLE TV Y CAST
+  // =========================================================================
+  async function sendTvCommand(command, extraPayload = {}) {
+    const targetIpEl = document.getElementById("tv-target-ip");
+    const targetIp = targetIpEl ? targetIpEl.value : "192.168.100.25";
+    StarkAudio.playBlip(850, 0.03);
+
+    try {
+      const payload = { target_ip: targetIp, command: command, ...extraPayload };
+      const res = await secureFetch("/api/tv/remote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      appendLog("REMOTE", data.message || `Comando '${command}' ejecutado en ${targetIp}`, "log-info");
+    } catch (e) {
+      appendLog("REMOTE", `Fallo al enviar comando '${command}' a ${targetIp}`, "log-warn");
+    }
+  }
+  window.sendTvCommand = sendTvCommand;
+
+  // D-Pad y Botones de Navegación
+  document.getElementById("btn-dpad-up")?.addEventListener("click", () => sendTvCommand("dpad_up"));
+  document.getElementById("btn-dpad-down")?.addEventListener("click", () => sendTvCommand("dpad_down"));
+  document.getElementById("btn-dpad-left")?.addEventListener("click", () => sendTvCommand("dpad_left"));
+  document.getElementById("btn-dpad-right")?.addEventListener("click", () => sendTvCommand("dpad_right"));
+  document.getElementById("btn-dpad-ok")?.addEventListener("click", () => sendTvCommand("select"));
+
+  document.getElementById("btn-tv-back")?.addEventListener("click", () => sendTvCommand("back"));
+  document.getElementById("btn-tv-home")?.addEventListener("click", () => sendTvCommand("home"));
+  document.getElementById("btn-tv-menu")?.addEventListener("click", () => sendTvCommand("menu"));
+  document.getElementById("btn-tv-power")?.addEventListener("click", () => sendTvCommand("power_toggle"));
+  document.getElementById("btn-tv-mute")?.addEventListener("click", () => sendTvCommand("mute"));
+
+  document.getElementById("btn-tv-vol-up")?.addEventListener("click", () => sendTvCommand("volume_up"));
+  document.getElementById("btn-tv-vol-down")?.addEventListener("click", () => sendTvCommand("volume_down"));
+  document.getElementById("btn-tv-play-pause")?.addEventListener("click", () => sendTvCommand("play_pause"));
+
+  // Lanzadores de Apps Rápidos
+  document.getElementById("btn-app-yt-theweeknd")?.addEventListener("click", () => {
+    sendTvCommand("play_youtube", { youtube_id: "4NRXx6U8ABQ" });
+  });
+  document.getElementById("btn-app-netflix")?.addEventListener("click", () => sendTvCommand("launch_app", { app_id: "netflix" }));
+  document.getElementById("btn-app-prime")?.addEventListener("click", () => sendTvCommand("launch_app", { app_id: "prime_video" }));
+  document.getElementById("btn-app-spotify")?.addEventListener("click", () => sendTvCommand("launch_app", { app_id: "spotify" }));
+
+  // Navegación por Teclado Físico (D-Pad)
+  window.addEventListener("keydown", (e) => {
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+    if (e.key === "ArrowUp") { e.preventDefault(); document.getElementById("btn-dpad-up")?.click(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); document.getElementById("btn-dpad-down")?.click(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("btn-dpad-left")?.click(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("btn-dpad-right")?.click(); }
+  });
+
+  // =========================================================================
+  // 12. MODAL DE LECTURA DE CORREO & EXTRACTOR TÁCTICO OTP
+  // =========================================================================
+  const emailModalOverlay = document.getElementById("email-reader-modal-overlay");
+  const btnCloseEmailModal = document.getElementById("btn-close-email-modal");
+  const btnCloseEmailModalFooter = document.getElementById("btn-close-email-modal-footer");
+  const btnCopyOtp = document.getElementById("btn-copy-otp-code");
+
+  function extractOtpCode(text) {
+    if (!text) return null;
+    const contextRegex = /(?:código|code|otp|verification|verificación|passcode|token|clave)[^\w\d]{1,10}(\d{4,8})\b/i;
+    const match = text.match(contextRegex);
+    if (match && match[1]) return match[1];
+
+    const standaloneRegex = /\b(\d{6}|\d{8})\b/;
+    const mStandalone = text.match(standaloneRegex);
+    if (mStandalone && mStandalone[1]) return mStandalone[1];
+    return null;
+  }
+
+  window.openEmailModal = function(emailData) {
+    if (!emailModalOverlay) return;
+    StarkAudio.playBlip(1050, 0.04);
+
+    document.getElementById("modal-mail-sender").textContent = emailData.sender || "Desconocido";
+    document.getElementById("modal-mail-subject").textContent = emailData.subject || "(Sin Asunto)";
+    document.getElementById("modal-mail-date").textContent = emailData.date || new Date().toLocaleString();
+    document.getElementById("modal-mail-content").textContent = emailData.snippet || emailData.body || "Sin contenido disponible.";
+
+    const fullText = `${emailData.subject} ${emailData.snippet || ''} ${emailData.body || ''}`;
+    const detectedOtp = (emailData.otp && emailData.otp.code) ? emailData.otp.code : extractOtpCode(fullText);
+    const otpBanner = document.getElementById("otp-tactical-banner");
+    const otpValEl = document.getElementById("otp-code-value");
+
+    if (detectedOtp) {
+      otpBanner.style.display = "flex";
+      otpValEl.textContent = detectedOtp;
+      StarkAudio.playAlert();
+    } else {
+      otpBanner.style.display = "none";
+    }
+
+    emailModalOverlay.style.display = "flex";
+  };
+
+  btnCloseEmailModal?.addEventListener("click", () => emailModalOverlay.style.display = "none");
+  btnCloseEmailModalFooter?.addEventListener("click", () => emailModalOverlay.style.display = "none");
+
+  btnCopyOtp?.addEventListener("click", async () => {
+    const code = document.getElementById("otp-code-value")?.textContent;
+    if (!code) return;
+
+    try {
+      await navigator.clipboard.writeText(code);
+      StarkAudio.playSuccess();
+      const btnText = document.getElementById("btn-copy-otp-text");
+      if (btnText) {
+        const orig = btnText.textContent;
+        btnText.textContent = "✓ ¡CÓDIGO COPIADO!";
+        setTimeout(() => btnText.textContent = orig, 2500);
+      }
+      appendLog("AUTH/OTP", `Código de seguridad ${code} copiado al portapapeles.`, "log-success");
+    } catch (e) {
+      appendLog("AUTH/OTP", "No se pudo acceder al portapapeles del sistema.", "log-warn");
+    }
+  });
+
+  // =========================================================================
+  // 13. VINCULACIÓN GOOGLE OAUTH2 WORKSPACE & GMAIL
+  // =========================================================================
+  async function checkGoogleLinkStatus() {
+    const statusBtn = document.getElementById("btn-google-auth-header");
+    const statusText = document.getElementById("google-auth-status-text");
+    const cfgName = document.getElementById("cfg-google-account-name");
+
+    try {
+      const res = await secureFetch("/api/auth/google/status");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.linked) {
+          if (statusBtn) {
+            statusBtn.className = "btn-google-sync linked";
+            statusText.textContent = "🟢 GOOGLE VINCULADO";
+          }
+          if (cfgName) cfgName.textContent = `ESTADO: VINCULADO (${data.email || 'brunourrea502@gmail.com'})`;
+          return;
+        }
+      }
+    } catch (e) {}
+
+    if (statusBtn) {
+      statusBtn.className = "btn-google-sync unlinked";
+      statusText.textContent = "🔴 VINCULAR GOOGLE";
+    }
+    if (cfgName) cfgName.textContent = "ESTADO: NO VINCULADO (OAuth2 Requerido)";
+  }
+
+  function initiateGoogleOAuth() {
+    StarkAudio.playBlip(900, 0.04);
+    appendLog("OAUTH", "Iniciando flujo de autorización Google Workspace / Gmail...", "log-info");
+    
+    window.open("/api/auth/google/login", "GoogleOAuth", "width=550,height=650,menubar=no,toolbar=no");
+
+    window.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "GOOGLE_AUTH_SUCCESS") {
+        appendLog("OAUTH", "✓ Cuenta de Google vinculada exitosamente con V.I.E.R.N.E.S.", "log-success");
+        StarkAudio.playSuccess();
+        checkGoogleLinkStatus();
+        loadEmails();
+      }
+    }, { once: true });
+  }
+
+  document.getElementById("btn-google-auth-header")?.addEventListener("click", initiateGoogleOAuth);
+  document.getElementById("btn-trigger-google-oauth")?.addEventListener("click", initiateGoogleOAuth);
+
+  // Inicializar estado de Google al arrancar
+  checkGoogleLinkStatus();
 });

@@ -153,10 +153,78 @@
               <option value="temuco">Temuco</option>
               <option value="puerto_montt">Puerto Montt</option>
             </select>
+          <div class="input-group" style="grid-column: span 2;">
+            <label>INTEGRACIÓN GOOGLE WORKSPACE & GMAIL API (OAUTH 2.0)</label>
+            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--border-cyan); padding: 10px 14px; border-radius: 4px; margin-top: 4px;">
+              <div>
+                <div id="cfg-google-account-name" style="font-family: var(--font-hud); font-size: 11px; color: var(--cyan-stark);">ESTADO: NO VINCULADO</div>
+                <div style="font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);">Habilita lectura de Gmail, extracción de 2FA/OTP y Cast en Android TV.</div>
+              </div>
+              <button type="button" class="btn-stark" id="btn-trigger-google-oauth" style="background: linear-gradient(135deg, rgba(66, 133, 244, 0.3), rgba(52, 168, 83, 0.3)); border: 1px solid #4285f4; font-size: 11px; padding: 6px 12px;">
+                VINCULAR GOOGLE
+              </button>
+            </div>
           </div>
         </div>
         <div class="settings-actions">
           <button class="btn-stark btn-glow" id="btn-save-settings">GUARDAR Y ACTUALIZAR .ENV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- EMAIL READER MODAL (CON EXTRACTOR TÁCTICO DE OTP / 2FA) -->
+  <div class="email-modal-overlay" id="email-reader-modal-overlay" style="display: none;">
+    <div class="email-reader-card">
+      <div class="panel-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="panel-tag">// SECURE_COMM_TRIAGE</span>
+          <h2 id="modal-mail-source-title">INSPECTOR DE CORREO // GMAIL SECURE</h2>
+        </div>
+        <button class="btn-close-modal" id="btn-close-email-modal">✕</button>
+      </div>
+
+      <div class="email-reader-body">
+        <!-- BADGE TÁCTICO DESTACADO DE CÓDIGO OTP / 2FA -->
+        <div class="otp-banner-card" id="otp-tactical-banner" style="display: none;">
+          <div class="otp-badge-header">
+            <span class="otp-alert-tag">⚡ CÓDIGO DE SEGURIDAD 2FA / OTP DETECTADO</span>
+            <span class="otp-expiry-hint">USO INMEDIATO REQUERIDO</span>
+          </div>
+          <div class="otp-badge-main">
+            <div class="otp-digits-container">
+              <span class="otp-code-value" id="otp-code-value">------</span>
+            </div>
+            <button class="btn-copy-otp" id="btn-copy-otp-code" title="Copiar código al portapapeles">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+              <span id="btn-copy-otp-text">COPIAR CÓDIGO</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Metadatos del Correo -->
+        <div class="email-meta-grid">
+          <div class="meta-row">
+            <span class="meta-key">REMITENTE:</span>
+            <span class="meta-val highlight" id="modal-mail-sender">--</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-key">ASUNTO:</span>
+            <span class="meta-val" id="modal-mail-subject">--</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-key">FECHA:</span>
+            <span class="meta-val mono" id="modal-mail-date">--</span>
+          </div>
+        </div>
+
+        <!-- Cuerpo del Correo -->
+        <div class="email-body-container">
+          <div class="email-body-content" id="modal-mail-content">Cargando contenido completo...</div>
+        </div>
+
+        <div class="email-modal-actions">
+          <button class="btn-subtle" id="btn-close-email-modal-footer">CERRAR VISOR</button>
         </div>
       </div>
     </div>
@@ -197,6 +265,9 @@
 
       <div class="header-right">
         <div class="header-actions">
+          <button class="btn-google-sync unlinked" id="btn-google-auth-header" title="Vincular cuenta de Google Workspace / Gmail">
+            <span id="google-auth-status-text">🔴 VINCULAR GOOGLE</span>
+          </button>
           <button class="btn-icon" id="btn-open-settings" title="Configurar APIs y .env">⚙️ CONFIG</button>
           <button class="btn-icon" id="btn-logout" title="Cerrar Sesión">🔒 SALIR</button>
         </div>
@@ -293,6 +364,87 @@
           </div>
           <div class="panel-body scrollable-content" id="device-matrix">
             <div class="empty-notice">Sincronizando dispositivos descubiertos...</div>
+          </div>
+        </div>
+
+        <!-- PANEL DE CONTROL REMOTO ANDROID TV / CAST CYBERPUNK -->
+        <div class="hud-panel panel-android-tv" id="panel-android-tv">
+          <div class="panel-header">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="panel-tag">// 04.B</span>
+              <h2>CONTROL REMOTO // ANDROID TV & CAST</h2>
+            </div>
+            <div class="remote-target-selector">
+              <select id="tv-target-ip" class="input-select-tactical">
+                <option value="192.168.100.25">192.168.100.25 (Google TV)</option>
+                <option value="192.168.100.31">192.168.100.31 (Google Home)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="panel-body remote-body">
+            <div class="remote-top-bar">
+              <button class="btn-remote-tactical btn-power" id="btn-tv-power" title="Power On/Off">
+                <span>⏻ POWER</span>
+              </button>
+              <div class="remote-status-display" id="tv-status-display">DIAL v2 // ONLINE</div>
+              <button class="btn-remote-tactical btn-mute" id="btn-tv-mute" title="Silenciar">
+                <span>🔇 MUTE</span>
+              </button>
+            </div>
+
+            <!-- D-Pad Cross -->
+            <div class="dpad-wrapper">
+              <div class="dpad-cross">
+                <button class="dpad-btn dpad-up" id="btn-dpad-up" title="Arriba">▲</button>
+                <button class="dpad-btn dpad-left" id="btn-dpad-left" title="Izquierda">◀</button>
+                <button class="dpad-btn dpad-center" id="btn-dpad-ok" title="OK / Enter">
+                  <div class="arc-core-mini"></div>
+                  <span>OK</span>
+                </button>
+                <button class="dpad-btn dpad-right" id="btn-dpad-right" title="Derecha">▶</button>
+                <button class="dpad-btn dpad-down" id="btn-dpad-down" title="Abajo">▼</button>
+              </div>
+            </div>
+
+            <!-- Nav Controls -->
+            <div class="remote-nav-row">
+              <button class="btn-remote-tactical" id="btn-tv-back">↩ ATRÁS</button>
+              <button class="btn-remote-tactical" id="btn-tv-home">⌂ HOME</button>
+              <button class="btn-remote-tactical" id="btn-tv-menu">☰ MENÚ</button>
+            </div>
+
+            <!-- Volume & Media -->
+            <div class="remote-volume-row">
+              <div class="vol-group">
+                <button class="btn-vol-tactical" id="btn-tv-vol-up">+</button>
+                <span class="vol-label">VOL</span>
+                <button class="btn-vol-tactical" id="btn-tv-vol-down">-</button>
+              </div>
+              <div class="media-controls-group">
+                <button class="btn-media-tactical" id="btn-tv-play-pause">⏯ PLAY / PAUSA</button>
+              </div>
+            </div>
+
+            <!-- Quick App Launchers -->
+            <div class="remote-apps-grid">
+              <button class="btn-app-tactical btn-app-youtube" id="btn-app-yt-theweeknd" title="Lanzar The Weeknd en YouTube">
+                <span class="app-dot red"></span>
+                <span>YOUTUBE (THE WEEKND)</span>
+              </button>
+              <button class="btn-app-tactical btn-app-netflix" id="btn-app-netflix">
+                <span class="app-dot red"></span>
+                <span>NETFLIX</span>
+              </button>
+              <button class="btn-app-tactical btn-app-prime" id="btn-app-prime">
+                <span class="app-dot blue"></span>
+                <span>PRIME VIDEO</span>
+              </button>
+              <button class="btn-app-tactical btn-app-spotify" id="btn-app-spotify">
+                <span class="app-dot gold"></span>
+                <span>SPOTIFY / AUDIO</span>
+              </button>
+            </div>
           </div>
         </div>
 

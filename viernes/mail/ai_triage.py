@@ -5,7 +5,7 @@ Descarta spam, ofertas, promociones y boletines para enfocar la atención solo e
 
 import re
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger("viernes.mail.triage")
 
@@ -25,50 +25,104 @@ IMPORTANT_KEYWORDS = [
 ]
 
 
+# Expresiones regulares para extracción de códigos 2FA / OTP
+OTP_PATTERNS = [
+    re.compile(r'(?:código|code|otp|pin|clave|passcode|token|seguridad)[^\w\d]{1,10}(\d{4,8})\b', re.IGNORECASE),
+    re.compile(r'\b(G-\d{6})\b'),
+    re.compile(r'\b(\d{3}-\d{3})\b'),
+    re.compile(r'\b(\d{6})\b')
+]
+
+PROVIDER_PATTERNS = {
+    "Google": ["google", "accounts.google.com", "gmail"],
+    "GitHub": ["github", "github.com"],
+    "Microsoft": ["microsoft", "live.com", "outlook", "azure"],
+    "Banco de Chile": ["bancochile", "banco de chile", "edwards"],
+    "Santander": ["santander", "santander.cl"],
+    "BancoEstado": ["bancoestado", "banco estado"],
+    "MercadoPago": ["mercadopago", "mercadolibre"],
+    "OpenAI": ["openai", "chatgpt"],
+    "AWS": ["amazon web services", "aws"],
+    "Discord": ["discord"]
+}
+
+
 class EmailTriageEngine:
-    """Motor híbrido (Heurístico + IA) de clasificación de correos."""
+    """Motor híbrido (Heurístico + IA) de clasificación de correos y extracción de 2FA/OTP."""
+
+    @staticmethod
+    def extract_otp(text: str) -> Optional[Dict[str, str]]:
+        """Extrae códigos de verificación en dos pasos (2FA/OTP) y detecta el proveedor."""
+        for pat in OTP_PATTERNS:
+            match = pat.search(text)
+            if match:
+                code = match.group(1) if match.lastindex else match.group(0)
+                # Detectar proveedor
+                provider = "Servicio Web"
+                text_low = text.lower()
+                for prov_name, kw_list in PROVIDER_PATTERNS.items():
+                    if any(k in text_low for k in kw_list):
+                        provider = prov_name
+                        break
+                return {"code": code.replace("-", ""), "provider": provider}
+        return None
 
     @staticmethod
     def classify_heuristically(sender: str, subject: str, snippet: str) -> Dict[str, Any]:
         """Clasificación rápida en microsegundos basada en patrones y metadatos."""
-        text = f"{sender} {subject} {snippet}".lower()
+        full_text = f"{sender} {subject} {snippet}".lower()
 
-        # 1. Detección de publicidad / newsletter
+        # 1. Detección prioritaria de Códigos 2FA / OTP
+        otp_info = EmailTriageEngine.extract_otp(f"{subject} {snippet}")
+        if otp_info or any(k in full_text for k in ["código de verificación", "verification code", "security code", "tu clave temporal", "código de seguridad"]):
+            return {
+                "is_important": True,
+                "category": "OTP_2FA",
+                "reason": f"Código de seguridad 2FA/OTP detectado ({otp_info['provider'] if otp_info else 'Seguridad'})",
+                "priority": "CRITICAL",
+                "otp": otp_info
+            }
+
+        # 2. Detección de publicidad / newsletter
         for kw in PROMOTIONAL_KEYWORDS:
-            if kw in text:
+            if kw in full_text:
                 return {
                     "is_important": False,
                     "category": "PROMOTION",
                     "reason": f"Detectado patrón promocional '{kw}'",
                     "priority": "LOW",
+                    "otp": None
                 }
 
-        # 2. Detección de remitentes automatizados no urgentes
+        # 3. Detección de remitentes automatizados no urgentes
         if any(ignored in sender.lower() for ignored in ["newsletter", "updates@", "notifications@facebook", "marketing@"]):
             return {
                 "is_important": False,
                 "category": "NEWSLETTER",
                 "reason": "Remitente de boletín automatizado",
                 "priority": "LOW",
+                "otp": None
             }
 
-        # 3. Detección de urgencia / importancia
+        # 4. Detección de urgencia / importancia
         for kw in IMPORTANT_KEYWORDS:
-            if kw in text:
+            if kw in full_text:
                 return {
                     "is_important": True,
                     "category": "IMPORTANT",
                     "reason": f"Contiene término clave relevante '{kw}'",
                     "priority": "HIGH",
+                    "otp": None
                 }
 
-        # 4. Por defecto, si viene de una persona real o dominio propio
+        # 5. Por defecto, si viene de una persona real o dominio propio
         if "@gmail.com" in sender or "@zoho.com" in sender or "@" in sender:
             return {
                 "is_important": True,
                 "category": "PERSONAL_OR_WORK",
                 "reason": "Correo directo sin patrones promocionales",
                 "priority": "MEDIUM",
+                "otp": None
             }
 
         return {
@@ -76,6 +130,7 @@ class EmailTriageEngine:
             "category": "GENERAL",
             "reason": "Baja relevancia aparente",
             "priority": "LOW",
+            "otp": None
         }
 
     @classmethod
@@ -89,6 +144,8 @@ class EmailTriageEngine:
                 snippet=mail.get("snippet", mail.get("body", "")[:200])
             )
             mail["triage"] = analysis
+            if analysis.get("otp"):
+                mail["otp"] = analysis["otp"]
             if analysis["is_important"]:
                 important_list.append(mail)
 

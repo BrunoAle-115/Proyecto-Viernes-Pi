@@ -2,7 +2,7 @@
   "pc_principal": {
     "id": "pc_principal",
     "alias": "Mi PC Gamer",
-    "ip": "192.168.1.150",
+    "ip": "192.168.100.150",
     "mac": "00:11:22:33:44:55",
     "type": "desktop",
     "wol_enabled": true,
@@ -18,5 +18,26 @@
     "wol_enabled": false,
     "status": "online",
     "last_seen": null
+  },
+  "luz_wiz": {
+    "id": "luz_wiz",
+    "alias": "Luz WiZ Escritorio",
+    "ip": "192.168.100.15",
+    "mac": "",
+    "type": "wiz_light",
+    "port": 38899,
+    "vendor": "WiZ Connected",
+    "status": "online",
+    "last_seen": "2026-08-26T21:49:11.275051"
+  },
+  "aire_ac": {
+    "id": "aire_ac",
+    "alias": "Aire Acondicionado AIRSYS",
+    "ip": "192.168.100.20",
+    "mac": "",
+    "type": "air_conditioner",
+    "vendor": "AIRSYS / Tuya Smart Life",
+    "status": "online",
+    "last_seen": "2026-08-26T21:49:11.275051"
   }
 }

@@ -281,15 +281,15 @@ HABIT_MINING_RULES = [
     },
     {
         "category": "routine",
-        "subcategory": "fitness_workout",
-        "key_prefix": "rutina_gimnasio",
+        "subcategory": "software_development_ai",
+        "key_prefix": "rutina_desarrollo_ia",
         "patterns": [
-            r"voy\s+al\s+(?:gimnasio|gym)",
-            r"entreno\s+(?:en\s+el\s+gym|pesas|calistenia|crossfit|cardio)",
-            r"d[íi]a\s+de\s+(?:pecho|espalda|pierna|entrenamiento)",
-            r"hago\s+(?:ejercicio|deporte|running|pesas)"
+            r"(?:programar|desarrollar|codear|compilar)\s+(?:en\s+python|en\s+c\+\+|en\s+linux|en\s+la\s+raspberry\s+pi\s+5|en\s+la\s+rpi5|ia|modelos)",
+            r"(?:sesi[óo]n\s+de\s+c[óo]digo|desarrollo\s+de\s+software|compilaci[óo]n\s+de\s+kernel|despliegue\s+en\s+linux)",
+            r"entreno\s+(?:el\s+modelo|la\s+red|los\s+vectores|el\s+rag|la\s+ia)",
+            r"laboratorio\s+de\s+(?:ia|desarrollo|raspberry\s+pi|linux)"
         ],
-        "default_action": "workout_reminder"
+        "default_action": "software_dev_ai_session"
     },
     {
         "category": "preference",
@@ -552,7 +552,7 @@ class AutoMemoryFeeder:
         ("me gusta", "preference", "preferencia_usuario"),
         ("mi comida favorita", "preference", "comida_favorita"),
         ("mi café favorito", "preference", "cafe_favorito"),
-        ("voy al gimnasio", "routine", "rutina_gym"),
+        ("programo en python", "routine", "rutina_desarrollo_software"),
         ("dejé las llaves", "fact", "ubicacion_llaves"),
         ("dejé mi", "fact", "ubicacion_objeto"),
         ("recuerda que", "fact", "nota_recordatorio"),
@@ -724,17 +724,17 @@ class ProactiveSuggestionEngine:
                             "tool_args": {"target": "luces_escritorio", "action": "brightness", "brightness": 70}
                         })
 
-        # 3. Evaluación de Rutina de Ejercicio / Gym (18:00 a 21:00)
+        # 3. Evaluación de Rutina de Desarrollo (18:00 a 21:00)
         elif 18 <= current_hour < 21:
             for m in memories:
-                if "gym" in m["key_concept"] or "gimnasio" in m["key_concept"]:
+                if "software" in m["key_concept"] or "desarrollo" in m["key_concept"]:
                     suggestions.append({
-                        "type": "workout_alert",
+                        "type": "development_alert",
                         "priority": "HIGH",
-                        "title": "Entrenamiento Físico",
-                        "suggested_speech": f"Señor, hoy {weekday_name} suele entrenar en el gimnasio. Los sistemas de la Raspberry Pi permanecerán en vigilancia activa durante su ausencia.",
+                        "title": "Sesión de Desarrollo",
+                        "suggested_speech": f"Señor, hoy {weekday_name} suele dedicar tiempo al desarrollo de software. ¿Desea que prepare el entorno de trabajo?",
                         "recommended_tool": "store_personal_memory",
-                        "tool_args": {"category": "routine", "key_concept": "ultima_sesion_gym", "content": f"Entrenamiento completado el {weekday_name}"}
+                        "tool_args": {"category": "routine", "key_concept": "ultima_sesion_dev", "content": f"Sesión de desarrollo el {weekday_name}"}
                     })
 
         # 4. Evaluación Nocturna y Modo Reposo (22:00 a 02:00)
