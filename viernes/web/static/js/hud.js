@@ -69,6 +69,42 @@ document.addEventListener("DOMContentLoaded", () => {
   let isSpeaking = false;
   let authToken = "";
 
+  // --- STARK AUDIO PROCEDURAL SFX SYNTHESIZER (Web Audio API) ---
+  const StarkAudio = {
+    ctx: null,
+    init() {
+      if (!this.ctx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) this.ctx = new AudioCtx();
+      }
+    },
+    playBlip(freq = 950, duration = 0.035) {
+      try {
+        this.init();
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.4, this.ctx.currentTime + duration);
+        gain.gain.setValueAtTime(0.06, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+      } catch (e) {}
+    },
+    playSuccess() {
+      this.playBlip(800, 0.04);
+      setTimeout(() => this.playBlip(1200, 0.06), 45);
+    },
+    playAlert() {
+      this.playBlip(400, 0.08);
+      setTimeout(() => this.playBlip(320, 0.1), 80);
+    }
+  };
+
   // 1. Clock
   function updateClock() {
     const now = new Date();
@@ -78,53 +114,86 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(updateClock, 1000);
   updateClock();
 
-  // 2. Holographic Waveform Visualizer
+  // 2. Quantum Arc Reactor Visualizer (HiDPI Responsive)
   let phase = 0;
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
   function drawWaveform() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const width = canvas.width;
-    const height = canvas.height;
-    const centerY = height / 2;
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+    const cx = width / 2;
+    const cy = height / 2;
 
-    const baseAmp = isSpeaking ? 32 : Math.max(6, currentAudioRms * 85);
-    const color = isSpeaking ? "#ffb700" : "#00f0ff";
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
 
-    // Central Glowing Arc Core
-    ctx.beginPath();
-    ctx.arc(width / 2, centerY, isSpeaking ? 20 + Math.sin(phase) * 4 : 14 + currentAudioRms * 12, 0, Math.PI * 2);
-    ctx.strokeStyle = color;
+    const baseColor = isSpeaking ? "rgba(255, 183, 0, 0.9)" : "rgba(0, 240, 255, 0.9)";
+    const glowColor = isSpeaking ? "rgba(255, 183, 0, 0.45)" : "rgba(0, 240, 255, 0.35)";
+
+    // 1. Anillo Segmentado Arc Reactor (Rotating Segmented Ticks)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(phase * 0.4);
+    ctx.strokeStyle = baseColor;
     ctx.lineWidth = 2;
-    ctx.shadowBlur = 14;
-    ctx.shadowColor = color;
-    ctx.stroke();
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = glowColor;
 
-    // Wave 1
-    ctx.beginPath();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = color;
-    for (let x = 0; x < width; x++) {
-      const distFromCenter = Math.abs(x - width / 2) / (width / 2);
-      const envelope = Math.max(0, 1 - distFromCenter);
-      const y = centerY + Math.sin(x * 0.04 + phase) * baseAmp * envelope;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    const segments = 12;
+    const ringRadius = 22 + currentAudioRms * 18;
+    for (let i = 0; i < segments; i++) {
+      const angle = (i * 2 * Math.PI) / segments;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius, angle, angle + 0.28);
+      ctx.stroke();
     }
-    ctx.stroke();
 
-    // Harmonic Wave 2
+    // Anillo interno en contra-rotación
+    ctx.rotate(-phase * 0.8);
     ctx.beginPath();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(0, 255, 157, 0.6)";
-    for (let x = 0; x < width; x++) {
-      const distFromCenter = Math.abs(x - width / 2) / (width / 2);
-      const envelope = Math.max(0, 1 - distFromCenter);
-      const y = centerY + Math.cos(x * 0.08 - phase * 1.5) * (baseAmp * 0.5) * envelope;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    ctx.arc(0, 0, 10 + (isSpeaking ? Math.sin(phase * 2) * 3 : currentAudioRms * 8), 0, Math.PI * 2);
+    ctx.fillStyle = glowColor;
+    ctx.fill();
     ctx.stroke();
+    ctx.restore();
 
-    phase += 0.08;
+    // 2. Ondas Cuánticas Multicapa (Quantum Wave Ribbons)
+    const baseAmp = isSpeaking ? 30 : Math.max(8, currentAudioRms * 90);
+    const layers = [
+      { color: baseColor, freq: 0.035, speed: 1.0, width: 2.0 },
+      { color: "rgba(0, 255, 157, 0.7)", freq: 0.065, speed: -1.4, width: 1.2 },
+      { color: "rgba(0, 150, 255, 0.4)", freq: 0.02, speed: 0.7, width: 1.0 }
+    ];
+
+    layers.forEach((l) => {
+      ctx.beginPath();
+      ctx.lineWidth = l.width;
+      ctx.strokeStyle = l.color;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = l.color;
+
+      for (let x = 0; x < width; x += 2) {
+        const dist = Math.abs(x - cx) / (width * 0.5);
+        const envelope = Math.pow(Math.max(0, 1 - dist), 1.6);
+        const y = cy + Math.sin(x * l.freq + phase * l.speed) * baseAmp * envelope;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    });
+
+    ctx.restore();
+    phase += 0.07;
     requestAnimationFrame(drawWaveform);
   }
   drawWaveform();

@@ -19,7 +19,13 @@ import asyncio
 import numpy as np
 from fastapi.testclient import TestClient
 
-from viernes.memory.vector_rag import VectorDatabaseRAG, VectorEmbeddingService, AutoMemoryFeeder
+from viernes.memory.vector_rag import (
+    VectorDatabaseRAG,
+    VectorEmbeddingService,
+    AutoMemoryFeeder,
+    HabitEntityExtractor,
+    ProactiveSuggestionEngine
+)
 from viernes.auth.security import sanitize_text, sanitize_ip_or_mac, rate_limiter, auth_rate_limiter
 from viernes.web.server import app
 
@@ -139,3 +145,102 @@ def test_sip_tls_and_anti_hacking_config():
     assert "always_auth_reject=yes" in content
     assert "media_encryption=sdes" in content
     assert "allow_unauthenticated_options=no" in content
+
+
+def test_habit_entity_extractor():
+    # 1. Extracción de horas
+    assert HabitEntityExtractor.extract_time_target("suelo despertar a las 08:30 AM") == "08:30"
+    assert HabitEntityExtractor.extract_time_target("normalmente me levanto a las 7 am") == "07:00"
+    assert HabitEntityExtractor.extract_time_target("entreno a las 19:30") == "19:30"
+    assert HabitEntityExtractor.extract_time_target("salgo tipo 8 de la noche") == "20:00"
+
+    # 2. Extracción de días
+    days1 = HabitEntityExtractor.extract_recurrence_days("voy al gym los martes y jueves")
+    assert "martes" in days1 and "jueves" in days1
+
+    days2 = HabitEntityExtractor.extract_recurrence_days("trabajo en el tarro de lunes a viernes")
+    assert "lunes" in days2 or "viernes" in days2 or "lunes_a_viernes" in days2
+
+    # 3. Extracción espacial (objeto y ubicación)
+    spatial = HabitEntityExtractor.extract_spatial_entity("dejé las llaves en la mesa de entrada")
+    assert spatial is not None
+    assert spatial["item"] == "llaves"
+    assert "mesa de entrada" in spatial["place"]
+
+    spatial2 = HabitEntityExtractor.extract_spatial_entity("guardé mi billetera sobre el escritorio")
+    assert spatial2 is not None
+    assert spatial2["item"] == "billetera"
+    assert "escritorio" in spatial2["place"]
+
+
+def test_advanced_habit_mining_and_consolidation():
+    async def _test_mining():
+        temp_dir = tempfile.mkdtemp()
+        test_db = str(Path(temp_dir) / "test_advanced_habits.db")
+        try:
+            from viernes.memory import vector_rag as vr_module
+            old_rag = vr_module.vector_rag
+            vr_module.vector_rag = VectorDatabaseRAG(db_path=test_db)
+
+            # 1. Minería de Rutina Matutina con entidad de hora
+            res1 = await AutoMemoryFeeder.analyze_and_auto_feed("Suelo despertar a las 07:30 de la mañana")
+            assert res1 is not None
+            assert res1["matched"] is True
+            assert res1["category"] == "routine"
+            assert res1["metadata"]["time_target"] == "07:30"
+
+            # 2. Refuerzo de Hábito (misma rutina repetida consolida y no duplica)
+            res2 = await AutoMemoryFeeder.analyze_and_auto_feed("Normalmente me levanto a las 07:30 am")
+            assert res2 is not None
+            assert res2["result"]["is_reinforced"] is True
+
+            # 3. Minería de Preferencia Laboral (WoL / PC Gamer)
+            res3 = await AutoMemoryFeeder.analyze_and_auto_feed("Mi computador principal de trabajo es el PC Gamer")
+            assert res3 is not None
+            assert res3["category"] == "preference"
+
+            # 4. Minería de Hecho Espacial
+            res4 = await AutoMemoryFeeder.analyze_and_auto_feed("Dejé las llaves en la repisa del pasillo")
+            assert res4 is not None
+            assert res4["category"] == "fact"
+            assert res4["metadata"]["spatial_item"] == "llaves"
+
+            # 5. Búsqueda semántica híbrida enriquecida
+            mems = await vr_module.vector_rag.query_semantic_search("dónde dejé las llaves", top_k=1)
+            assert len(mems) == 1
+            assert "repisa del pasillo" in mems[0]["content"]
+
+            vr_module.vector_rag = old_rag
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    asyncio.run(_test_mining())
+
+
+def test_proactive_suggestion_engine():
+    async def _test_proactivity():
+        temp_dir = tempfile.mkdtemp()
+        test_db = str(Path(temp_dir) / "test_proactivity.db")
+        try:
+            rag = VectorDatabaseRAG(db_path=test_db)
+            engine = ProactiveSuggestionEngine(rag)
+
+            # Simular hora matutina (08:00 AM)
+            from datetime import datetime
+            dt_morning = datetime(2026, 8, 27, 8, 15)
+            suggestions_morning = await engine.evaluate_proactive_suggestions(current_dt=dt_morning)
+            assert len(suggestions_morning) >= 1
+            types_m = [s["type"] for s in suggestions_morning]
+            assert "morning_briefing" in types_m or "workstation_power" in types_m
+
+            # Simular hora de descanso nocturno (23:30)
+            dt_night = datetime(2026, 8, 27, 23, 30)
+            suggestions_night = await engine.evaluate_proactive_suggestions(current_dt=dt_night)
+            assert len(suggestions_night) >= 1
+            assert suggestions_night[0]["type"] == "night_standby"
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    asyncio.run(_test_proactivity())
+

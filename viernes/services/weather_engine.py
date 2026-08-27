@@ -1,6 +1,7 @@
 """
 Módulo Meteorológico de Alta Precisión para Chile (Open-Meteo API).
 Pronóstico actual, por hora y detección de probabilidad y volumen de lluvia.
+Optimizado para cálculo exacto de la ventana temporal de 12 horas desde la hora actual.
 """
 
 import json
@@ -80,18 +81,27 @@ class WeatherEngine:
             w_code = current.get("weather_code", 0)
             condition = WMO_WEATHER_CODES.get(w_code, "Condición estable")
 
-            # Analizar pronóstico por hora (próximas 12 horas)
             times = hourly.get("time", [])
             temps = hourly.get("temperature_2m", [])
             rain_probs = hourly.get("precipitation_probability", [])
             rain_amounts = hourly.get("precipitation", [])
+
+            # Calcular el inicio exacto desde la hora actual (no desde las 00:00)
+            now_dt = datetime.now()
+            current_hour_str = now_dt.strftime("%Y-%m-%dT%H:00")
+            start_idx = 0
+            for idx, t in enumerate(times):
+                if t >= current_hour_str:
+                    start_idx = idx
+                    break
 
             hourly_forecast = []
             max_rain_prob = 0
             will_rain = False
             rain_hours = []
 
-            for i in range(min(12, len(times))):
+            # Evaluar las próximas 12 horas desde este momento
+            for i in range(start_idx, min(start_idx + 12, len(times))):
                 prob = rain_probs[i] if i < len(rain_probs) else 0
                 amount = rain_amounts[i] if i < len(rain_amounts) else 0.0
                 if prob > max_rain_prob:
@@ -123,7 +133,6 @@ class WeatherEngine:
             }
         except Exception as e:
             logger.error(f"Error consultando Open-Meteo: {e}")
-            # Fallback en caso de sin conexión
             return {
                 "city": loc["name"],
                 "current_temp": 19.5,
@@ -139,14 +148,16 @@ class WeatherEngine:
 
     @classmethod
     async def get_voice_weather_summary(cls, city: str = "santiago") -> str:
-        """Genera un reporte oral para que V.I.E.R.N.E.S. responda fluidamente."""
+        """Genera un reporte oral conversacional y fluido para V.I.E.R.N.E.S."""
         data = await cls.get_forecast(city)
-        text = f"En {data['city']}, actualmente tenemos {data['current_temp']} grados Celsius con {data['condition'].lower()}.\n"
+        text = f"En {data['city']}, actualmente registramos {data['current_temp']} grados Celsius con {data['condition'].lower()}.\n"
         
         if data["will_rain"]:
-            text += f"Alerta de precipitaciones: Hay una probabilidad de lluvia del {data['max_rain_probability']} por ciento durante el día. Le recomiendo llevar paraguas, señor."
+            details = data["rain_forecast_details"]
+            detail_str = f", con precipitaciones previstas a partir de las {details[0].split(' ')[0]}" if details else ""
+            text += f"Alerta de precipitaciones: Hay una probabilidad de lluvia del {data['max_rain_probability']} por ciento{detail_str}. Le sugiero llevar paraguas, señor."
         else:
-            text += "No se esperan precipitaciones significativas para las próximas horas."
+            text += "No se esperan precipitaciones para las próximas doce horas."
 
         return text
 

@@ -93,7 +93,8 @@ pip install -r requirements.txt
 # 4. PERMISOS Y PRIVILEGIOS SIN ROOT (Raw Sockets para ARP y Audio)
 # ------------------------------------------------------------------------------
 echo -e "\n${GOLD}[4/7] Configurando permisos de audio y sockets de red...${NC}"
-sudo usermod -aG audio,dialout,netdev $USER || true
+TARGET_USER="${SUDO_USER:-$USER}"
+sudo usermod -aG audio,dialout,netdev $TARGET_USER || true
 
 # Permitir a Python enviar tramas ARP sin ser ejecutado con sudo
 PYTHON_BIN="$PROJECT_DIR/.venv/bin/python3"
@@ -106,6 +107,7 @@ fi
 # ------------------------------------------------------------------------------
 echo -e "\n${GOLD}[5/7] Configurando carpetas de datos y variables de entorno...${NC}"
 mkdir -p data credentials config/asterisk logs
+chown -R $TARGET_USER:$TARGET_USER data logs credentials 2>/dev/null || true
 
 if [ ! -f ".env" ]; then
     cp .env.example .env
@@ -127,21 +129,24 @@ pytest -v || {
 # ------------------------------------------------------------------------------
 echo -e "\n${GOLD}[7/7] Configurando servicio systemd para arranque automático en el boot...${NC}"
 SERVICE_FILE="/etc/systemd/system/viernes.service"
-CURRENT_USER="${SUDO_USER:-$USER}"
 
 sudo bash -c "cat <<EOF > $SERVICE_FILE
 [Unit]
 Description=V.I.E.R.N.E.S. Tactical AI Assistant Core (Raspberry Pi 5)
-After=network-online.target sound.target asterisk.service
-Wants=network-online.target
+After=network-online.target time-sync.target sound.target asterisk.service
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple
-User=$CURRENT_USER
+User=$TARGET_USER
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$PROJECT_DIR/.venv/bin/python3 $PROJECT_DIR/viernes/main.py
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 Environment=PYTHONUNBUFFERED=1
 LimitNOFILE=65536
 

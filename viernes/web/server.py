@@ -122,6 +122,8 @@ async def on_system_event(event: Event):
 bus.subscribe("*", on_system_event)
 
 
+from pydantic import BaseModel, Field, field_validator
+
 # Modelos Pydantic con Sanitización y Validación Robusta
 class LoginRequest(BaseModel):
     email: str = Field(..., max_length=120)
@@ -130,8 +132,9 @@ class LoginRequest(BaseModel):
 class WolRequest(BaseModel):
     target: str = Field(..., max_length=60)
 
-    @validator("target")
-    def sanitize_target(cls, v):
+    @field_validator("target")
+    @classmethod
+    def sanitize_target(cls, v: str) -> str:
         return sanitize_ip_or_mac(v)
 
 class LightRequest(BaseModel):
@@ -142,8 +145,9 @@ class LightRequest(BaseModel):
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=1000)
 
-    @validator("prompt")
-    def sanitize_prompt(cls, v):
+    @field_validator("prompt")
+    @classmethod
+    def sanitize_prompt(cls, v: str) -> str:
         return sanitize_text(v)
 
 class CallRequest(BaseModel):

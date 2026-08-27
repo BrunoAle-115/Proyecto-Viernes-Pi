@@ -77,16 +77,24 @@ async def start_assistant():
 
 
 def main():
-    """Función de arranque."""
+    """Función de arranque con Auto-Switching de Puertos."""
+    from viernes.core.port_manager import port_manager
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Auditar servicios coexistentes (Pi-hole, Asterisk, Tailscale)
+    audit = port_manager.check_system_services_collision()
+    logger.info(f"Auditoría de Servicios Pi 5: {audit}")
 
     # Arrancar tareas de fondo del asistente
     loop.create_task(start_assistant())
 
-    # Iniciar servidor Web HUD con Uvicorn
+    # Iniciar servidor Web HUD con Auto-Switching si el puerto 9090 estuviera ocupado
     host = os.getenv("WEB_HOST", "0.0.0.0")
-    port = int(os.getenv("WEB_PORT", 9090))
+    requested_port = int(os.getenv("WEB_PORT", 9090))
+    port = port_manager.get_available_port(requested_port, fallback_range=15, service_name="WebHUD")
+
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", loop="asyncio")
     server = uvicorn.Server(config)
 

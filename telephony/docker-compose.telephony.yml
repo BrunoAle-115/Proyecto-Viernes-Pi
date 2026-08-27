@@ -32,11 +32,9 @@ services:
       dockerfile_inline: |
         FROM python:3.11-slim
         WORKDIR /app
-        COPY requirements.txt .
-        RUN pip install --no-cache-dir -r requirements.txt
-        COPY src/ ./src/
+        COPY telephony_engine/ ./telephony_engine/
         ENV PYTHONPATH=/app
-        CMD ["python", "-m", "src.telephony_service"]
+        CMD ["python", "-m", "telephony_engine.telephony_service"]
     container_name: viernes-telephony-bridge
     restart: unless-stopped
     network_mode: "host"
