@@ -314,6 +314,64 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // 4. Settings Modal (.env live updates)
+  const btnFetchModels = document.getElementById("btn-fetch-models");
+
+  async function fetchAndPopulateGeminiModels(customKey = "", selectedModel = "") {
+    if (!cfgGeminiModel) return;
+    const previousSelection = selectedModel || cfgGeminiModel.value;
+    cfgGeminiModel.innerHTML = '<option value="">Consultando catálogo oficial de Google AI Studio...</option>';
+
+    try {
+      const queryKey = customKey && !customKey.includes("...") ? `?api_key=${encodeURIComponent(customKey)}` : "";
+      const res = await secureFetch(`/api/gemini/models${queryKey}`);
+      if (res.ok) {
+        const data = await res.json();
+        const models = data.models || [];
+        cfgGeminiModel.innerHTML = "";
+
+        if (models.length === 0) {
+          cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Predefinido)</option>';
+          return;
+        }
+
+        models.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          const liveTag = m.is_live_capable ? " [⚡ LIVE STREAMING]" : "";
+          opt.textContent = `${m.displayName}${liveTag}`;
+          if (m.id === previousSelection || m.is_active || (m.clean_id && previousSelection.endsWith(m.clean_id))) {
+            opt.selected = true;
+          }
+          cfgGeminiModel.appendChild(opt);
+        });
+      } else {
+        cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Predefinido)</option>';
+      }
+    } catch (err) {
+      cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Fallback)</option>';
+    }
+  }
+
+  if (btnFetchModels) {
+    btnFetchModels.addEventListener("click", () => {
+      const keyVal = cfgGeminiKey.value.trim();
+      fetchAndPopulateGeminiModels(keyVal);
+    });
+  }
+
+  let keyDebounceTimer = null;
+  if (cfgGeminiKey) {
+    cfgGeminiKey.addEventListener("input", () => {
+      clearTimeout(keyDebounceTimer);
+      const val = cfgGeminiKey.value.trim();
+      if (val.length > 25 && !val.includes("...")) {
+        keyDebounceTimer = setTimeout(() => {
+          fetchAndPopulateGeminiModels(val);
+        }, 600);
+      }
+    });
+  }
+
   btnOpenSettings.addEventListener("click", async () => {
     settingsOverlay.style.display = "flex";
     try {
@@ -321,11 +379,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (res.ok) {
         const s = await res.json();
         cfgGeminiKey.value = s.gemini_api_key_masked || "";
-        cfgGeminiModel.value = s.gemini_model || "models/gemini-2.0-flash-exp";
         cfgGithubToken.value = s.github_token_masked || "";
         cfgGithubRepos.value = s.github_repos || "BrunoAle-115/Proyecto-Viernes-Pi";
         cfgSipProvider.value = s.sip_provider || "zadarma_chile";
         cfgCity.value = s.default_city || "santiago";
+        await fetchAndPopulateGeminiModels("", s.gemini_model);
       }
     } catch (e) {
       console.error("Error cargando settings", e);

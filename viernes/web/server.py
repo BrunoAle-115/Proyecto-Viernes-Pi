@@ -438,6 +438,15 @@ async def get_memories_api(user: dict = Depends(get_current_user)):
 async def add_memory_api(req: MemoryRequest, user: dict = Depends(get_current_user)):
     return await vector_rag.insert_memory(req.category, req.key_concept, req.content, source="user_hud")
 
+@app.get("/api/gemini/models")
+async def api_get_gemini_models(api_key: Optional[str] = None, user: dict = Depends(get_current_user)):
+    models = await models_manager.list_available_models(api_key=api_key)
+    return {
+        "success": True,
+        "models": models,
+        "active_model": models_manager.active_model
+    }
+
 @app.get("/api/settings")
 async def get_settings_api(user: dict = Depends(get_current_user)):
     raw_key = os.getenv("GEMINI_API_KEY", "")

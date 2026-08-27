@@ -56,35 +56,40 @@ class GeminiModelsManager:
             data = json.loads(response.read().decode())
             return data.get("models", [])
 
-    async def list_available_models(self) -> List[Dict[str, Any]]:
-        """Lista todos los modelos disponibles consultando a la API de Google AI Studio."""
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key or api_key.startswith("AIzaSyYour"):
-            # Retornar lista de modelos recomendados con bandera activa
+    async def list_available_models(self, api_key: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Lista todos los modelos oficiales disponibles consultando a la API de Google AI Studio."""
+        target_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        if not target_key or target_key.startswith("AIzaSyYour") or target_key.startswith("AIzaSy..."):
+            # Si no hay key válida, retornar catálogo base con selector activo
             for m in RECOMMENDED_MODELS:
                 m["is_active"] = (m["id"] == self.active_model)
             return RECOMMENDED_MODELS
 
         loop = asyncio.get_running_loop()
         try:
-            raw_models = await loop.run_in_executor(None, self._fetch_remote_models, api_key)
+            raw_models = await loop.run_in_executor(None, self._fetch_remote_models, target_key)
             formatted = []
             for rm in raw_models:
                 m_name = rm.get("name", "")
-                # Filtrar solo modelos relevantes de generación
                 if "gemini" in m_name.lower():
-                    is_live = "flash" in m_name.lower() or "2.0" in m_name.lower() or "3" in m_name.lower()
+                    clean_id = m_name.replace("models/", "")
+                    disp_name = rm.get("displayName") or clean_id
+                    is_live = "flash" in m_name.lower() or "2.0" in m_name.lower() or "exp" in m_name.lower()
                     formatted.append({
                         "id": m_name,
-                        "displayName": rm.get("displayName", m_name.split("/")[-1]),
-                        "description": rm.get("description", ""),
+                        "clean_id": clean_id,
+                        "displayName": f"{disp_name} ({clean_id})",
+                        "description": rm.get("description", "Modelo oficial de Google AI Studio."),
                         "is_live_capable": is_live,
-                        "is_active": (m_name == self.active_model or m_name.split("/")[-1] == self.active_model.split("/")[-1]),
+                        "is_active": (m_name == self.active_model or clean_id == self.active_model.replace("models/", "")),
                         "supported_generation_methods": rm.get("supportedGenerationMethods", [])
                     })
-            return formatted if formatted else RECOMMENDED_MODELS
+            if formatted:
+                logger.info(f"✓ {len(formatted)} modelos oficiales recuperados de Google AI Studio.")
+                return formatted
+            return RECOMMENDED_MODELS
         except Exception as e:
-            logger.warning(f"No se pudo consultar la lista remota de modelos ({e}). Usando preset local.")
+            logger.warning(f"Error consultando modelos oficiales en Google AI Studio ({e}). Usando catálogo base.")
             for m in RECOMMENDED_MODELS:
                 m["is_active"] = (m["id"] == self.active_model)
             return RECOMMENDED_MODELS

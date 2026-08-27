@@ -114,16 +114,16 @@
       <div class="settings-body">
         <div class="settings-grid">
           <div class="input-group">
-            <label>GEMINI API KEY (Google AI Studio)</label>
-            <input type="password" id="cfg-gemini-key" placeholder="AIzaSy..." />
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label style="margin-bottom: 0;">GEMINI API KEY (Google AI Studio)</label>
+              <button type="button" id="btn-fetch-models" class="btn-stark" style="padding: 2px 8px; font-size: 10px;">↻ SINCRONIZAR MODELOS</button>
+            </div>
+            <input type="password" id="cfg-gemini-key" placeholder="AIzaSy..." autocomplete="off" />
           </div>
           <div class="input-group">
-            <label>MODELO ACTIVO GEMINI LIVE</label>
+            <label>MODELO ACTIVO GEMINI LIVE (CATÁLOGO OFICIAL GOOGLE AI STUDIO)</label>
             <select id="cfg-gemini-model">
-              <option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash Live (Dev Free Tier)</option>
-              <option value="models/gemini-2.0-flash">Gemini 2.0 Flash Standard</option>
-              <option value="models/gemini-1.5-flash">Gemini 1.5 Flash</option>
-              <option value="models/gemini-1.5-pro">Gemini 1.5 Pro</option>
+              <option value="">Sincronizando catálogo oficial de Google AI Studio...</option>
             </select>
           </div>
           <div class="input-group">
