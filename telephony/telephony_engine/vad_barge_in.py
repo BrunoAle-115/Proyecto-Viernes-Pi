@@ -6,17 +6,69 @@ está reproduciendo una respuesta por el canal telefónico.
 
 Características:
 - Análisis de energía RMS sobre fragmentos PCM lineales (16-bit).
+- Compatible con Python 3.8, 3.9, 3.10, 3.11, 3.12 y Python 3.13+ (eliminación de audioop en PEP 594).
 - Ventana de amortiguación (Debounce) para evitar falsos positivos por ruidos de línea PSTN.
 - Detección de fin de habla (End of Speech Detection con timeout ajustable).
 - Disparo de evento Barge-In para detener la reproducción TTS inmediatamente.
 """
 
-import audioop
+import math
+import struct
 import logging
 import time
 from typing import Callable, Optional
 
+# En Python 3.13+, 'audioop' fue removido de la librería estándar (PEP 594).
+# Implementamos soporte dual: audioop si está disponible, o motor NumPy/struct optimizado.
+try:
+    import audioop
+    HAVE_AUDIOOP = True
+except (ImportError, ModuleNotFoundError):
+    audioop = None
+    HAVE_AUDIOOP = False
+
+try:
+    import numpy as np
+    HAVE_NUMPY = True
+except (ImportError, ModuleNotFoundError):
+    np = None
+    HAVE_NUMPY = False
+
 logger = logging.getLogger("VIERNES.VAD")
+
+
+def calculate_pcm16_rms(pcm_data: bytes) -> int:
+    """
+    Calcula el valor RMS (Root Mean Square) de audio Linear PCM 16-bit.
+    Garantiza 100% de compatibilidad en Python 3.13+ sin dependencias de C obsoletas.
+    """
+    if not pcm_data or len(pcm_data) < 2:
+        return 0
+
+    if HAVE_AUDIOOP and audioop is not None:
+        try:
+            return audioop.rms(pcm_data, 2)
+        except Exception:
+            pass
+
+    if HAVE_NUMPY and np is not None:
+        try:
+            # Vectorización SIMD rápida
+            samples = np.frombuffer(pcm_data, dtype=np.int16)
+            if len(samples) == 0:
+                return 0
+            return int(np.sqrt(np.mean(samples.astype(np.float64)**2)))
+        except Exception:
+            pass
+
+    # Fallback puro Python con struct
+    try:
+        count = len(pcm_data) // 2
+        shorts = struct.unpack(f"<{count}h", pcm_data[:count * 2])
+        sum_sq = sum(s * s for s in shorts)
+        return int(math.sqrt(sum_sq / count))
+    except Exception:
+        return 0
 
 
 class VoiceActivityDetector:
@@ -27,7 +79,7 @@ class VoiceActivityDetector:
     def __init__(
         self,
         energy_threshold: int = 550,          # Umbral de energía RMS para habla humana
-        voice_debounce_ms: int = 160,          # Milisegundos de habla continua para confirmar voz
+        voice_debounce_ms: int = 160,         # Milisegundos de habla continua para confirmar voz
         silence_timeout_ms: int = 750,        # Milisegundos de silencio para confirmar fin de frase
         on_speech_started: Optional[Callable[[], None]] = None,
         on_speech_ended: Optional[Callable[[], None]] = None,
@@ -53,17 +105,12 @@ class VoiceActivityDetector:
 
     def process_pcm_chunk(self, pcm_data: bytes):
         """
-        Procesa un chunk de audio PCM de 16 bits.
+        Procesa un chunk de audio PCM de 16 bits y evalúa inicio/fin de voz y barge-in.
         """
         if not pcm_data or len(pcm_data) < 2:
             return
 
-        try:
-            # Calcular nivel de energía RMS (Root Mean Square)
-            rms = audioop.rms(pcm_data, 2)
-        except Exception:
-            rms = 0
-
+        rms = calculate_pcm16_rms(pcm_data)
         now = time.time() * 1000  # ms
 
         if rms >= self.energy_threshold:
@@ -98,12 +145,3 @@ class VoiceActivityDetector:
                     logger.debug(f"🤫 Fin de habla detectado tras {silence_duration:.0f}ms de silencio.")
                     if self.on_speech_ended:
                         self.on_speech_ended()
-            elif not self.is_speaking:
-                self._speech_start_time = None
-
-    def reset(self):
-        """Reinicia los contadores y buffers del detector."""
-        self.is_speaking = False
-        self._speech_start_time = None
-        self._last_voice_time = None
-        self._audio_buffer.clear()
