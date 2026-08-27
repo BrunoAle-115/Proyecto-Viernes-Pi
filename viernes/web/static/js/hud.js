@@ -794,20 +794,121 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // --- SÍNTESIS DE VOZ PROCEDURAL Y WEB SPEECH API ---
+  function speakText(text) {
+    if (!window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const cleanText = text.replace(/\[.*?\]/g, "").replace(/[*_#`]/g, "").trim();
+      if (!cleanText) return;
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = "es-CL";
+      utterance.rate = 1.04;
+      utterance.pitch = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const spanishVoice = voices.find(v => (v.lang.includes("es") && (v.name.includes("Female") || v.name.includes("Helena") || v.name.includes("Sabina") || v.name.includes("Google") || v.name.includes("Paulina") || v.name.includes("Monica")))) || voices.find(v => v.lang.includes("es"));
+      if (spanishVoice) utterance.voice = spanishVoice;
+
+      utterance.onstart = () => {
+        isSpeaking = true;
+        if (voiceStateTag) {
+          voiceStateTag.textContent = "VIERNES // TRANSMITIENDO VOZ";
+          voiceStateTag.style.color = "var(--gold-stark)";
+        }
+      };
+
+      utterance.onend = () => {
+        isSpeaking = false;
+        if (voiceStateTag) {
+          voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
+          voiceStateTag.style.color = "var(--cyan-stark)";
+        }
+      };
+
+      utterance.onerror = () => {
+        isSpeaking = false;
+      };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {}
+  }
+
+  // --- RECONOCIMIENTO DE VOZ POR MICRÓFONO EN EL NAVEGADOR ---
+  let recognition = null;
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRec) {
+    recognition = new SpeechRec();
+    recognition.lang = "es-CL";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => {
+      btnTalkMic.textContent = "🎙️ ESCUCHANDO...";
+      btnTalkMic.style.background = "rgba(255, 51, 102, 0.35)";
+      btnTalkMic.style.borderColor = "var(--red-alert)";
+      if (voiceStateTag) {
+        voiceStateTag.textContent = "ESCUCHANDO ORDEN...";
+        voiceStateTag.style.color = "var(--red-alert)";
+      }
+      StarkAudio.playBlip(600, 0.05);
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      if (transcript && promptInput) {
+        promptInput.value = transcript;
+        btnPromptSend.click();
+      }
+    };
+
+    recognition.onerror = (e) => {
+      btnTalkMic.textContent = "🎙️ HABLAR / MICRÓFONO";
+      btnTalkMic.style.background = "";
+      btnTalkMic.style.borderColor = "";
+      appendLog("VOZ", "No se detectó audio en el micrófono del navegador.", "log-warn");
+    };
+
+    recognition.onend = () => {
+      btnTalkMic.textContent = "🎙️ HABLAR / MICRÓFONO";
+      btnTalkMic.style.background = "";
+      btnTalkMic.style.borderColor = "";
+      if (voiceStateTag && !isSpeaking) {
+        voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
+        voiceStateTag.style.color = "var(--cyan-stark)";
+      }
+    };
+  }
+
   btnPromptSend.addEventListener("click", async () => {
     const text = promptInput.value.trim();
     if (!text) return;
     promptInput.value = "";
     appendLog("BRUNO", text, "log-info");
+    StarkAudio.playBlip(750, 0.04);
 
-    const res = await secureFetch("/api/prompt", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: text })
-    });
-    const data = await res.json();
-    appendLog("VIERNES", data.response, "log-system");
-    loadMemory(); // Actualizar recuerdos si se auto-alimentó la DB vectorial
+    btnPromptSend.disabled = true;
+    btnPromptSend.textContent = "...";
+
+    try {
+      const res = await secureFetch("/api/prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: text })
+      });
+      const data = await res.json();
+      if (data && data.response) {
+        appendLog("VIERNES", data.response, "log-system");
+        speakText(data.response);
+      }
+      loadMemory();
+    } catch (e) {
+      appendLog("VIERNES", "Error al procesar comando con el núcleo de IA.", "log-warn");
+    } finally {
+      btnPromptSend.disabled = false;
+      btnPromptSend.textContent = "ENVIAR";
+    }
   });
 
   promptInput.addEventListener("keydown", (e) => {
@@ -815,7 +916,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   btnTalkMic.addEventListener("click", async () => {
-    appendLog("VOZ", "Reconocimiento de voz activo. Puedes hablar ahora.", "log-info");
+    if (recognition) {
+      try {
+        recognition.start();
+        appendLog("VOZ", "Micrófono del navegador activado. Habla ahora...", "log-info");
+      } catch (err) {
+        recognition.stop();
+      }
+    } else {
+      appendLog("VOZ", "Activando escucha permanente en Raspberry Pi 5...", "log-info");
+    }
     await secureFetch("/api/wakeword/trigger", { method: "POST" });
   });
 

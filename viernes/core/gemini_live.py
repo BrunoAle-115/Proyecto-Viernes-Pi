@@ -195,11 +195,123 @@ class GeminiLiveClient:
         except Exception as e:
             logger.debug(f"Error enviando audio a Gemini Live: {e}")
 
+    async def _generate_content_rest(self, prompt: str, context_hint: str = "") -> Optional[str]:
+        """Ejecuta inferencia directa con la API oficial de Google Gemini con soporte para Function Calling."""
+        import urllib.request
+        api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
+        if not api_key or api_key.startswith("AIzaSyYour"):
+            return None
+
+        # Resolver modelo activo
+        active_model = models_manager.active_model.replace("models/", "")
+        if not active_model or "exp" in active_model:
+            active_model = "gemini-2.0-flash"
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{active_model}:generateContent?key={api_key}"
+
+        system_text = VIERNES_SYSTEM_PROMPT
+        if context_hint:
+            system_text += f"\n\nContexto relevante de la memoria del usuario:\n{context_hint}"
+
+        tools_payload = [{"functionDeclarations": GEMINI_TOOL_DECLARATIONS}]
+
+        request_body = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "systemInstruction": {
+                "parts": [{"text": system_text}]
+            },
+            "tools": tools_payload,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 800
+            }
+        }
+
+        loop = asyncio.get_running_loop()
+
+        def _do_post(body_dict):
+            req_data = json.dumps(body_dict).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=req_data,
+                headers={"Content-Type": "application/json", "User-Agent": "VIERNES-AI-Agent/2.0"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=12) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            resp_data = await loop.run_in_executor(None, _do_post, request_body)
+            candidates = resp_data.get("candidates", [])
+            if not candidates:
+                return None
+
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+
+            func_call = None
+            text_reply = ""
+            for p in parts:
+                if "functionCall" in p:
+                    func_call = p["functionCall"]
+                elif "text" in p:
+                    text_reply += p["text"]
+
+            if func_call:
+                fn_name = func_call.get("name")
+                fn_args = func_call.get("args", {})
+                logger.info(f"⚡ Gemini Function Calling invocado desde Web: {fn_name}({fn_args})")
+                tool_result = await ToolsDispatcher.execute_tool(fn_name, fn_args)
+                logger.info(f"✓ Resultado de ejecución de {fn_name}: {tool_result}")
+
+                # Enviar resultado de vuelta al modelo para sintetizar respuesta natural
+                followup_body = {
+                    "contents": [
+                        {"role": "user", "parts": [{"text": prompt}]},
+                        {"role": "model", "parts": [{"functionCall": func_call}]},
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "functionResponse": {
+                                        "name": fn_name,
+                                        "response": {"result": tool_result}
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "systemInstruction": {"parts": [{"text": system_text}]},
+                    "tools": tools_payload
+                }
+
+                followup_resp = await loop.run_in_executor(None, _do_post, followup_body)
+                fc_candidates = followup_resp.get("candidates", [])
+                if fc_candidates:
+                    fc_parts = fc_candidates[0].get("content", {}).get("parts", [])
+                    final_text = "".join(p.get("text", "") for p in fc_parts).strip()
+                    if final_text:
+                        return final_text
+
+                return tool_result.get("message") or tool_result.get("voice_summary") or tool_result.get("summary") or "Comando ejecutado exitosamente, señor."
+
+            if text_reply:
+                return text_reply.strip()
+
+        except Exception as e:
+            logger.warning(f"Error en consulta REST a Gemini AI ({e}). Recurriendo a ejecutor local.")
+            return None
+
     async def send_text_prompt(self, prompt: str) -> str:
-        """Permite enviar comandos de texto directo a través del Dashboard HUD con Vector RAG."""
+        """Permite enviar comandos de texto o voz a través del Dashboard HUD con Vector RAG e IA real."""
         from viernes.memory.vector_rag import vector_rag, AutoMemoryFeeder
 
-        logger.info(f"Usuario (HUD): {prompt}")
+        logger.info(f"Usuario (HUD Web): {prompt}")
         await bus.publish("user/text_prompt", {"text": prompt}, sender="hud")
 
         # 1. Auto-feed de memoria en segundo plano
@@ -209,13 +321,27 @@ class GeminiLiveClient:
         relevant_memories = await vector_rag.query_semantic_search(prompt, top_k=2)
         context_hint = ""
         if relevant_memories:
-            context_hint = " [Contexto RAG: " + "; ".join([m["content"] for m in relevant_memories]) + "]"
+            context_hint = "; ".join([m["content"] for m in relevant_memories])
 
-        # 3. Ejecución inteligente vía ToolsDispatcher si coincide con comandos directos
+        # 3. Intentar procesar con el modelo de IA Gemini real de Google conectado
+        gemini_ai_response = await self._generate_content_rest(prompt, context_hint)
+        if gemini_ai_response:
+            return gemini_ai_response
+
+        # 4. Fallback local vía ToolsDispatcher si no hay conexión a Internet o clave inválida
         prompt_low = prompt.lower()
         if "enciende" in prompt_low and ("pc" in prompt_low or "computador" in prompt_low or "tarro" in prompt_low):
             res = await ToolsDispatcher.execute_tool("turn_on_pc", {"device_name": "pc_principal"})
             return res.get("message", "Comando WoL enviado.")
+
+        if "frutifantastico" in prompt_low or "fiesta" in prompt_low:
+            res = await ToolsDispatcher.execute_tool("trigger_frutifantastico_mode", {})
+            return res.get("report", "Modo Frutifantástico activado.")
+
+        if "luz" in prompt_low or "luces" in prompt_low or "apaga" in prompt_low or "prende" in prompt_low:
+            action = "off" if "apaga" in prompt_low else "on"
+            res = await ToolsDispatcher.execute_tool("control_smart_light", {"target": "luz", "action": action})
+            return res.get("message", "Luces actualizadas.")
 
         if "noticia" in prompt_low or "noticias" in prompt_low or "titular" in prompt_low:
             res = await ToolsDispatcher.execute_tool("get_chile_news", {"limit": 3})
@@ -245,7 +371,7 @@ class GeminiLiveClient:
             })
             return res.get("message", "Recuerdo almacenado en la base de datos vectorial.")
 
-        return f"Comando procesado por V.I.E.R.N.E.S.{context_hint}"
+        return f"A su servicio, señor Bruno. Entendido: {prompt}"
 
     async def close(self):
         """Cierra la conexión de forma limpia."""
