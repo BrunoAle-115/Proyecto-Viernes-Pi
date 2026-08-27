@@ -74,7 +74,8 @@ async def start_assistant():
 
     # Manejador de Wake Word / Activación por voz continua (Ever-Listen)
     async def on_wakeword_detected(event):
-        logger.info(f"🎙️ [Ever-Listen] Activación por voz recibida ({event.get('data')}). Canal de voz listo.")
+        data_val = getattr(event, 'data', event)
+        logger.info(f"🎙️ [Ever-Listen] Activación por voz recibida ({data_val}). Canal de voz listo.")
         if not gemini_client.is_connected:
             asyncio.create_task(gemini_client.connect())
 
