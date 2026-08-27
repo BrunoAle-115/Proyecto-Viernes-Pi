@@ -128,6 +128,10 @@ document.addEventListener("DOMContentLoaded", () => {
   resizeCanvas();
 
   function drawWaveform(timestamp = 0) {
+    if (authOverlay && authOverlay.style.display !== "none") {
+      setTimeout(() => requestAnimationFrame(drawWaveform), 200);
+      return;
+    }
     if (document.hidden) {
       requestAnimationFrame(drawWaveform);
       return;

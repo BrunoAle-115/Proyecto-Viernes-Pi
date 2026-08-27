@@ -76,8 +76,9 @@ body.hud-body {
 .auth-modal-overlay, .settings-modal-overlay {
   position: fixed;
   top: 0; left: 0; width: 100vw; height: 100vh;
-  background: rgba(4, 8, 18, 0.88);
-  backdrop-filter: blur(16px);
+  background: rgba(4, 8, 18, 0.95);
+  contain: paint;
+  transform: translateZ(0);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -207,11 +208,12 @@ body.hud-body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--bg-panel);
+  background: var(--bg-panel-solid);
   border: 1px solid var(--border-cyan);
   padding: 12px 24px;
   border-radius: 4px;
-  backdrop-filter: blur(12px);
+  contain: content;
+  transform: translateZ(0);
   box-shadow: 0 0 20px rgba(0, 240, 255, 0.08);
 }
 
@@ -813,10 +815,11 @@ body.hud-body {
 
 /* ==================== FOOTER TERMINAL ==================== */
 .hud-footer {
-  background: var(--bg-panel);
+  background: var(--bg-panel-solid);
   border: 1px solid var(--border-cyan);
   border-radius: 4px;
-  backdrop-filter: blur(10px);
+  contain: content;
+  transform: translateZ(0);
 }
 
 .terminal-container { padding: 8px 14px; display: flex; flex-direction: column; gap: 4px; }
