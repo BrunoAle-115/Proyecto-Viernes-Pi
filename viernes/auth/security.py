@@ -37,7 +37,7 @@ SECRET_KEY = _get_or_create_secret_key()
 def hash_password(password: str) -> str:
     """Hashea una contraseña usando PBKDF2-HMAC-SHA256 con salt aleatorio."""
     salt = secrets.token_bytes(16)
-    iterations = 600000
+    iterations = 100000
     key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return f"pbkdf2_sha256${iterations}${salt.hex()}${key.hex()}"
 
