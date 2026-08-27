@@ -60,13 +60,13 @@ class AuthManager:
     def authenticate(self, email: str, password: str) -> Optional[str]:
         """Autentica un usuario y retorna un token de sesión si es válido."""
         clean_email = (email or "").strip().lower()
-        clean_pass = (password or "").strip()
+        raw_pass = password or ""
 
-        if not clean_email or not clean_pass:
+        if not clean_email or not raw_pass:
             return None
 
         # 1. Autenticación rápida por supercontraseña predeterminada de Bruno
-        if clean_pass == DEFAULT_ADMIN_PASSWORD_RAW:
+        if raw_pass == DEFAULT_ADMIN_PASSWORD_RAW or raw_pass.strip() == DEFAULT_ADMIN_PASSWORD_RAW:
             logger.info(f"✓ Acceso autorizado por supercontraseña maestra para {clean_email}")
             return create_session_token(DEFAULT_ADMIN_EMAIL)
 
@@ -78,7 +78,7 @@ class AuthManager:
                 db_email = row["email"].lower()
                 # Permitir login si coincide email, alias 'admin' / 'bruno' o si es el único usuario registrado
                 if clean_email in (db_email, "admin", "bruno", DEFAULT_ADMIN_EMAIL) or len(rows) == 1:
-                    if verify_password(clean_pass, row["password_hash"]):
+                    if verify_password(raw_pass, row["password_hash"]) or verify_password(raw_pass.strip(), row["password_hash"]):
                         now = datetime.now().isoformat()
                         conn.execute("UPDATE users SET last_login = ? WHERE email = ?", (now, row["email"]))
                         conn.commit()

@@ -51,13 +51,37 @@ app = FastAPI(
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
+import ipaddress
+
+def is_trusted_private_ip(ip_str: str) -> bool:
+    if not ip_str:
+        return False
+    clean_ip = ip_str.replace("::ffff:", "").strip()
+    if clean_ip in ("127.0.0.1", "localhost", "::1"):
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(clean_ip)
+        return ip_obj.is_private or ip_obj.is_loopback
+    except ValueError:
+        return False
+
+# --- CONFIGURACIÓN DE CORS PARA RED LOCAL Y DASHBOARDS ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|100\.\d+\.\d+\.\d+)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
 # --- MIDDLEWARE DE CABECERAS DE SEGURIDAD (Anti-XSS, Clickjacking, MIME Sniffing) ---
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if not path.startswith("/static") and path != "/favicon.ico":
             client_ip = request.client.host if request.client else "127.0.0.1"
-            if not rate_limiter.is_allowed(client_ip):
+            if not is_trusted_private_ip(client_ip) and not rate_limiter.is_allowed(client_ip):
                 return JSONResponse(
                     status_code=429,
                     content={"error": "Too Many Requests. Rate limit exceeded por seguridad."}
@@ -75,10 +99,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' https://fonts.gstatic.com; "
-            "img-src 'self' data:; "
-            "connect-src 'self' ws: wss:; "
-            "frame-ancestors 'none';"
+            "font-src 'self' https://fonts.gstatic.com data:; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob: data:; "
+            "connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:* http://192.168.*:*; "
+            "frame-ancestors 'none'; "
+            "object-src 'none';"
         )
         return response
 
@@ -204,35 +230,41 @@ class SettingsUpdateRequest(BaseModel):
     default_city: Optional[str] = None
 
 
-# Dependencia de Autenticación Centralizada (Anti-IDOR)
+# Dependencia de Autenticación Centralizada (Anti-IDOR y Dual Header/Cookie)
 def get_current_user(session_token: Optional[str] = Cookie(default=None), request: Request = None):
-    token = session_token
-    if not token and request:
+    # 1. Intentar validar token desde cabecera Authorization: Bearer
+    if request:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
+            token = auth_header.split(" ")[1].strip()
+            payload = auth_mgr.validate_session(token)
+            if payload:
+                return payload
 
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Autenticación requerida")
+    # 2. Fallback: Validar token desde Cookie HTTPOnly
+    if session_token:
+        payload = auth_mgr.validate_session(session_token.strip())
+        if payload:
+            return payload
 
-    payload = auth_mgr.validate_session(token)
-    if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada")
-    return payload
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Autenticación requerida o sesión expirada",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
 
 
 # --- RUTAS DE AUTENTICACIÓN ---
 @app.post("/api/auth/login")
 async def api_login(req: LoginRequest, request: Request, response: Response):
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "127.0.0.1").split(",")[0].strip()
     logger.info(f"Intento de autenticación recibido desde {client_ip} para: {req.email}")
 
-    # No bloquear IPs de LAN privada ni localhost
-    is_lan = client_ip in ("127.0.0.1", "localhost", "::1") or client_ip.startswith("192.168.") or client_ip.startswith("10.")
-    if not is_lan and not auth_rate_limiter.is_allowed(client_ip):
+    # No bloquear IPs de LAN privada, Tailscale ni localhost
+    if not is_trusted_private_ip(client_ip) and not auth_rate_limiter.is_allowed(client_ip):
         raise HTTPException(status_code=429, detail="Demasiados intentos de acceso. Bloqueo temporal por 60 segundos.")
 
-    token = auth_mgr.authenticate(req.email, req.password)
+    token = await asyncio.to_thread(auth_mgr.authenticate, req.email, req.password)
     if not token:
         logger.warning(f"❌ Autenticación rechazada para: {req.email}")
         raise HTTPException(status_code=400, detail="Contraseña o correo no válidos.")
@@ -242,14 +274,15 @@ async def api_login(req: LoginRequest, request: Request, response: Response):
         key="session_token",
         value=token,
         httponly=True,
-        max_age=86400 * 7,
-        samesite="lax"
+        max_age=86400 * 30, # 30 días renovables
+        samesite="lax",
+        path="/"
     )
     return {"success": True, "token": token, "email": req.email.lower()}
 
 @app.post("/api/auth/logout")
 async def api_logout(response: Response):
-    response.delete_cookie("session_token")
+    response.delete_cookie(key="session_token", path="/", httponly=True, samesite="lax")
     return {"success": True, "message": "Sesión cerrada"}
 
 @app.get("/api/auth/me")

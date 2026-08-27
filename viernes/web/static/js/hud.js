@@ -117,19 +117,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // 2. Quantum Arc Reactor Visualizer (Ultra-Optimized Lightweight Canvas)
   let phase = 0;
   let lastFrameTime = 0;
+  let cWidth = 300, cHeight = 80;
   function resizeCanvas() {
+    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x max to prevent 4k mobile lag
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    cWidth = rect.width;
+    cHeight = rect.height;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = cWidth * dpr;
+    canvas.height = cHeight * dpr;
+    if (ctx) ctx.scale(dpr, dpr);
   }
   window.addEventListener("resize", resizeCanvas, { passive: true });
   resizeCanvas();
 
   function drawWaveform(timestamp = 0) {
     if (authOverlay && authOverlay.style.display !== "none") {
-      setTimeout(() => requestAnimationFrame(drawWaveform), 200);
+      setTimeout(() => requestAnimationFrame(drawWaveform), 250);
       return;
     }
     if (document.hidden) {
@@ -143,12 +147,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     lastFrameTime = timestamp;
 
-    const rect = canvas.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
+    const width = cWidth;
+    const height = cHeight;
     const cx = width / 2;
     const cy = height / 2;
 
+    if (!ctx) return;
     ctx.clearRect(0, 0, width, height);
 
     const baseColor = isSpeaking ? "#ffb700" : "#00f0ff";
@@ -209,12 +213,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Helper fetch with Auth Headers & 401 handling
   async function secureFetch(url, options = {}) {
     options.headers = options.headers || {};
+    options.credentials = "include"; // Enviar cookies de sesión HTTPOnly
     if (authToken) {
       options.headers["Authorization"] = `Bearer ${authToken}`;
     }
     const res = await fetch(url, options);
-    if (res.status === 401) {
-      authOverlay.style.display = "flex";
+    if (res.status === 401 && url === "/api/auth/me") {
+      if (authOverlay) authOverlay.style.display = "flex";
     }
     return res;
   }
@@ -224,14 +229,14 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await secureFetch("/api/auth/me");
       if (res.ok) {
-        authOverlay.style.display = "none";
+        if (authOverlay) authOverlay.style.display = "none";
         loadAllData();
         connectWs();
       } else {
-        authOverlay.style.display = "flex";
+        if (authOverlay) authOverlay.style.display = "flex";
       }
     } catch (e) {
-      authOverlay.style.display = "flex";
+      if (authOverlay) authOverlay.style.display = "flex";
     }
   }
   checkAuth();
@@ -597,6 +602,7 @@ document.addEventListener("DOMContentLoaded", () => {
       loadGithub()
     ]);
   }
+  window.loadAllData = loadAllData;
 
   // 10. Authenticated WebSocket Telemetry Stream (Anti-Hijacking)
   let ws;
@@ -643,9 +649,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (authToken) setTimeout(connectWs, 3000);
     };
   }
+  window.connectWs = connectWs;
 
   function appendLog(topic, text, typeClass = "log-system") {
-    // Mantener un máximo de 40 logs para evitar fugas de memoria y lag de scroll
+    if (!termLogs) return;
     while (termLogs.children.length >= 40) {
       termLogs.removeChild(termLogs.firstChild);
     }
@@ -653,7 +660,9 @@ document.addEventListener("DOMContentLoaded", () => {
     entry.className = `log-entry ${typeClass}`;
     entry.textContent = `[${escapeHtml(topic.toUpperCase())}] ${text}`;
     termLogs.appendChild(entry);
-    termLogs.scrollTop = termLogs.scrollHeight;
+    requestAnimationFrame(() => {
+      termLogs.scrollTop = termLogs.scrollHeight;
+    });
   }
 
   // Handlers & Actions
@@ -706,6 +715,9 @@ document.addEventListener("DOMContentLoaded", () => {
       body: JSON.stringify({ target, power, temperature: temp, mode: mode, fan_speed: "auto" })
     });
     const data = await res.json();
+    appendLog("AIRSYS", data.message || "AC actualizado.", "log-success");
+  };
+
   window.triggerFrutifantastico = async () => {
     appendLog("FIESTA", "🍓🎉 ¡ACTIVANDO MODO FRUTIFANTÁSTICO! (WiZ Fiesta + The Weeknd en Google TV/Home)...", "log-warn");
     const res = await secureFetch("/api/macro/frutifantastico", {

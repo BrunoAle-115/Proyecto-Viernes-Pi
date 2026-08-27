@@ -6,7 +6,7 @@
   <title>V.I.E.R.N.E.S. 2.0 // STARK INDUSTRIES HUD</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="alternate icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/static/css/hud.css?v=3.0">
+  <link rel="stylesheet" href="/static/css/hud.css?v=3.5">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -33,11 +33,73 @@
           <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" />
         </div>
         <div class="auth-error-msg" id="auth-error-msg"></div>
-        <button type="submit" class="btn-stark btn-glow" id="btn-login-submit" onclick="window.handleLoginSubmit();" style="width: 100%; margin-top: 8px;">
+        <button type="submit" class="btn-stark btn-glow" id="btn-login-submit" style="width: 100%; margin-top: 8px;">
           INICIAR SESIÓN EN V.I.E.R.N.E.S.
         </button>
         <p class="auth-cli-hint">¿Olvidaste tu contraseña? Recuperación exclusiva por terminal CLI:<br><code>python scripts/reset_password.py</code></p>
       </form>
+
+      <script>
+        // Gestor de autenticación autocontenido de alta velocidad
+        (function() {
+          const token = localStorage.getItem("viernes_auth_token");
+          if (token) {
+            fetch("/api/auth/me", { headers: { "Authorization": "Bearer " + token } })
+              .then(r => {
+                if (r.ok) {
+                  const ov = document.getElementById("auth-modal-overlay");
+                  if (ov) ov.style.display = "none";
+                }
+              }).catch(() => {});
+          }
+
+          window.handleLoginSubmit = async function() {
+            const err = document.getElementById("auth-error-msg");
+            const emailIn = document.getElementById("login-email");
+            const passIn = document.getElementById("login-password");
+            const btn = document.getElementById("btn-login-submit");
+            const overlay = document.getElementById("auth-modal-overlay");
+
+            const email = (emailIn ? emailIn.value : "").trim();
+            const password = (passIn ? passIn.value : "");
+
+            if (!email || !password) {
+              if (err) err.textContent = "Por favor ingresa usuario y contraseña.";
+              return;
+            }
+
+            if (btn) {
+              btn.disabled = true;
+              btn.textContent = "AUTENTICANDO...";
+            }
+            if (err) err.textContent = "";
+
+            try {
+              const res = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: email, password: password })
+              });
+              const data = await res.json();
+              if (res.ok && data.success) {
+                localStorage.setItem("viernes_auth_token", data.token);
+                if (overlay) overlay.style.display = "none";
+                if (window.loadAllData) window.loadAllData();
+                if (window.connectWs) window.connectWs();
+              } else {
+                if (err) err.textContent = data.detail || "Contraseña o correo no válidos.";
+              }
+            } catch (e) {
+              if (err) err.textContent = "Error de red conectando con el núcleo.";
+            } finally {
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = "INICIAR SESIÓN EN V.I.E.R.N.E.S.";
+              }
+            }
+          };
+        })();
+      </script>
     </div>
   </div>
 
@@ -307,6 +369,6 @@
     </footer>
   </div>
 
-  <script src="/static/js/hud.js?v=3.0"></script>
+  <script src="/static/js/hud.js?v=3.5"></script>
 </body>
 </html>
