@@ -194,8 +194,13 @@ class GeminiLiveClient:
                         for part in parts:
                             inline_data = part.get("inlineData")
                             if inline_data and inline_data.get("mimeType", "").startswith("audio/pcm"):
-                                pcm_bytes = base64.b64decode(inline_data.get("data", ""))
+                                b64_pcm = inline_data.get("data", "")
+                                pcm_bytes = base64.b64decode(b64_pcm)
                                 await audio_pipeline.play_pcm_chunk(pcm_bytes)
+                                await bus.publish("ai/audio_chunk", {
+                                    "data": b64_pcm,
+                                    "mimeType": inline_data.get("mimeType", "audio/pcm;rate=24000")
+                                }, sender="gemini_live")
                                 self.is_speaking = True
 
                             text = part.get("text")
@@ -208,9 +213,11 @@ class GeminiLiveClient:
                         logger.info("🛑 [Barge-in] Interrupción detectada. Vaciando buffer de audio.")
                         self.is_speaking = False
                         audio_pipeline.interrupt_playback()
+                        await bus.publish("ai/interrupted", {}, sender="gemini_live")
 
                     if server_content.get("turnComplete"):
                         self.is_speaking = False
+                        await bus.publish("ai/turn_complete", {}, sender="gemini_live")
 
                 # 2. Manejo de Tool Calls (Function Calling)
                 tool_call = msg.get("toolCall")
@@ -227,6 +234,26 @@ class GeminiLiveClient:
         except Exception as e:
             logger.error(f"Error en receive_loop de Gemini Live: {e}")
             raise
+
+    async def feed_audio_chunk(self, pcm_bytes: bytes):
+        """Reenvía audio PCM 16kHz capturado desde el micrófono del navegador hacia Gemini Live."""
+        if not self.is_connected or not self.ws:
+            return
+        try:
+            b64_audio = base64.b64encode(pcm_bytes).decode("utf-8")
+            realtime_msg = {
+                "realtimeInput": {
+                    "mediaChunks": [
+                        {
+                            "mimeType": "audio/pcm;rate=16000",
+                            "data": b64_audio
+                        }
+                    ]
+                }
+            }
+            await self.ws.send(json.dumps(realtime_msg))
+        except Exception as e:
+            logger.debug(f"Error reenviando chunk de audio web a Gemini Live: {e}")
 
     async def _handle_tool_call(self, tool_call: dict):
         """Ejecuta herramientas y responde con el esquema exacto de BidiGenerateContent."""

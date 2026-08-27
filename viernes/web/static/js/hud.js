@@ -711,7 +711,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   window.loadAllData = loadAllData;
 
-  // 10. Authenticated WebSocket Telemetry Stream (Anti-Hijacking)
+  // 10. Authenticated WebSocket Telemetry & Live Voice Stream
   let ws;
   function connectWs() {
     if (ws && ws.readyState === WebSocket.OPEN) return;
@@ -722,6 +722,8 @@ document.addEventListener("DOMContentLoaded", () => {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+
+        // 1. Telemetría de hardware
         if (msg.type === "telemetry") {
           const t = msg.data;
           const newTemp = `${t.cpu.temperature_c}°C`;
@@ -733,26 +735,66 @@ document.addEventListener("DOMContentLoaded", () => {
           const newIp = `IP: ${escapeHtml(t.local_ip)}`;
           if (hostIp.textContent !== newIp) hostIp.textContent = newIp;
 
-          currentAudioRms = t.audio_rms || 0.02;
+          // Si el audio local no está sobreescribiendo el RMS, usar el del servidor
+          if (!window._isLocalAudioActive) {
+            currentAudioRms = t.audio_rms || 0.02;
+          }
           const newSpeaking = t.is_speaking || false;
-          if (isSpeaking !== newSpeaking) {
+          if (isSpeaking !== newSpeaking && !window._isLiveAudioPlaying) {
             isSpeaking = newSpeaking;
             if (isSpeaking) {
               voiceStateTag.textContent = "TRANSMITIENDO VOZ";
               voiceStateTag.style.color = "var(--gold-stark)";
-            } else {
+            } else if (!window._isLiveSessionActive) {
               voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
               voiceStateTag.style.color = "var(--cyan-stark)";
             }
           }
-        } else if (msg.type === "event") {
-          appendLog(msg.topic, JSON.stringify(msg.data), "log-info");
         }
-      } catch (err) {}
+        // 2. Chunks de audio PCM 24kHz desde Gemini Live WebSocket
+        else if (msg.type === "audio_out" && msg.data) {
+          if (window.liveAudioPlayer) {
+            window.liveAudioPlayer.playChunk(msg.data);
+          }
+        }
+        // 3. Interrupción del usuario (Barge-in)
+        else if (msg.type === "interrupted") {
+          if (window.liveAudioPlayer) {
+            window.liveAudioPlayer.stopAll();
+          }
+          if (voiceStateTag) {
+            voiceStateTag.textContent = "🎙️ ESCUCHANDO TU VOZ...";
+            voiceStateTag.style.color = "var(--cyan-stark)";
+          }
+        }
+        // 4. Fin de turno de habla de Gemini
+        else if (msg.type === "turn_complete") {
+          if (window._isLiveSessionActive && voiceStateTag) {
+            voiceStateTag.textContent = "🔴 CONVERSACIÓN ACTIVA // HABLA LIBREMENTE";
+            voiceStateTag.style.color = "var(--cyan-stark)";
+          }
+        }
+        // 5. Transcripción o respuestas de texto
+        else if (msg.type === "model_text" && msg.text) {
+          appendLog("VIERNES", msg.text, "log-system");
+        }
+        else if (msg.type === "prompt_response" && msg.response) {
+          appendLog("VIERNES", msg.response, "log-system");
+        }
+        // 6. Eventos del EventBus
+        else if (msg.type === "event") {
+          if (msg.topic === "ai/text_response" && msg.data?.text) {
+            appendLog("VIERNES", msg.data.text, "log-system");
+          } else {
+            appendLog(msg.topic, JSON.stringify(msg.data), "log-info");
+          }
+        }
+      } catch (err) {
+        console.debug("Error procesando frame WS:", err);
+      }
     };
 
     ws.onclose = () => {
-      // Reintentar solo si está autenticado
       if (authToken) setTimeout(connectWs, 3000);
     };
   }
@@ -844,266 +886,297 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // =========================================================================
-  // --- MOTOR ROBUSTO DE VOZ Y SÍNTESIS DE AUDIO (HUD STARK INDUSTRIES) ---
+  // --- GEMINI LIVE MULTIMODAL DUPLEX AUDIO ENGINE (STARK INDUSTRIES) ---
   // =========================================================================
 
-  // 1. GESTIÓN ROBUSTA DE VOCES (ASÍNCRONA + PREVENCIÓN GC)
-  let availableVoices = [];
-  let preferredSpanishVoice = null;
-  window._currentSpeechUtterance = null; // Previene Garbage Collection en Chrome/Edge
-
-  function initSpeechVoices() {
-    if (!window.speechSynthesis) return;
-    availableVoices = window.speechSynthesis.getVoices() || [];
-    if (availableVoices.length > 0) {
-      preferredSpanishVoice =
-        availableVoices.find(v => v.lang === "es-CL") ||
-        availableVoices.find(v => v.lang === "es-419") ||
-        availableVoices.find(v => v.lang.startsWith("es") && (
-          v.name.includes("Female") || v.name.includes("Helena") ||
-          v.name.includes("Sabina") || v.name.includes("Google") ||
-          v.name.includes("Paulina") || v.name.includes("Monica") ||
-          v.name.includes("Natural")
-        )) ||
-        availableVoices.find(v => v.lang.startsWith("es")) ||
-        availableVoices[0] || null;
+  // 1. REPRODUCTOR DE AUDIO STREAMING (PCM 16-BIT 24kHz DE GEMINI LIVE)
+  class LiveAudioPlayer {
+    constructor() {
+      this.audioCtx = null;
+      this.nextStartTime = 0;
+      this.activeSources = [];
+      this.sampleRate = 24000;
     }
-  }
 
-  if (window.speechSynthesis) {
-    initSpeechVoices();
-    if (window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = initSpeechVoices;
+    init() {
+      if (!this.audioCtx || this.audioCtx.state === "closed") {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new AudioCtx({ sampleRate: this.sampleRate });
+      }
+      if (this.audioCtx.state === "suspended") {
+        this.audioCtx.resume();
+      }
     }
-  }
 
-  // 2. REPRODUCTOR DE VOZ (TTS) CON FEEDBACK EN HUD Y VISUALIZADOR
-  function speakText(text) {
-    if (!window.speechSynthesis || !text) return;
+    playChunk(base64Data) {
+      try {
+        this.init();
+        if (!base64Data) return;
 
-    try {
-      window.speechSynthesis.cancel();
+        const binaryString = atob(base64Data);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
 
-      // Limpiar markdown, corchetes y URLs para locución fluida
-      const cleanText = text
-        .replace(/\[.*?\]/g, "")
-        .replace(/[*_#`~>]/g, "")
-        .replace(/https?:\/\/\S+/g, "")
-        .trim();
+        const int16 = new Int16Array(bytes.buffer);
+        const numSamples = int16.length;
+        if (numSamples === 0) return;
 
-      if (!cleanText) return;
+        const float32 = new Float32Array(numSamples);
+        let sumSquares = 0;
+        for (let i = 0; i < numSamples; i++) {
+          const val = int16[i] / 32768.0;
+          float32[i] = val;
+          sumSquares += val * val;
+        }
 
-      if (!preferredSpanishVoice && availableVoices.length === 0) {
-        initSpeechVoices();
-      }
-
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = preferredSpanishVoice ? preferredSpanishVoice.lang : "es-CL";
-      if (preferredSpanishVoice) {
-        utterance.voice = preferredSpanishVoice;
-      }
-      utterance.rate = 1.05;
-      utterance.pitch = 1.0;
-
-      utterance.onstart = () => {
+        // Modulación visual del Arc Reactor (en dorado)
+        const rms = Math.sqrt(sumSquares / numSamples);
+        currentAudioRms = Math.min(0.95, Math.max(0.1, rms * 4.0));
+        window._isLiveAudioPlaying = true;
         isSpeaking = true;
-        currentAudioRms = 0.45; // Modula el Arc Reactor en tono dorado
         if (voiceStateTag) {
           voiceStateTag.textContent = "VIERNES // TRANSMITIENDO VOZ";
           voiceStateTag.style.color = "var(--gold-stark)";
         }
-      };
 
-      const finishSpeech = () => {
-        isSpeaking = false;
-        currentAudioRms = 0.05;
-        window._currentSpeechUtterance = null;
-        if (voiceStateTag) {
-          voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
-          voiceStateTag.style.color = "var(--cyan-stark)";
+        const audioBuffer = this.audioCtx.createBuffer(1, numSamples, this.sampleRate);
+        audioBuffer.getChannelData(0).set(float32);
+
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(this.audioCtx.destination);
+
+        const now = this.audioCtx.currentTime;
+        if (this.nextStartTime < now) {
+          this.nextStartTime = now + 0.02; // 20ms buffer para evitar chasquidos
         }
-        // Reanudar escucha de wakeword si está en modo continuo
-        if (isHandsFreeActive && !isListening) {
-          startSpeechEngine(true);
-        }
-      };
 
-      utterance.onend = finishSpeech;
-      utterance.onerror = (err) => {
-        console.warn("TTS Error:", err);
-        finishSpeech();
-      };
+        source.start(this.nextStartTime);
+        this.nextStartTime += audioBuffer.duration;
 
-      window._currentSpeechUtterance = utterance;
+        this.activeSources.push(source);
+        source.onended = () => {
+          const idx = this.activeSources.indexOf(source);
+          if (idx !== -1) this.activeSources.splice(idx, 1);
+          if (this.activeSources.length === 0) {
+            window._isLiveAudioPlaying = false;
+            isSpeaking = false;
+            currentAudioRms = 0.02;
+            if (voiceStateTag && window._isLiveSessionActive) {
+              voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // HABLA LIBREMENTE";
+              voiceStateTag.style.color = "var(--cyan-stark)";
+            }
+          }
+        };
+      } catch (err) {
+        console.warn("LiveAudioPlayer error:", err);
+      }
+    }
 
-      // Destrabar cola de Chromium
-      window.speechSynthesis.resume();
-      window.speechSynthesis.speak(utterance);
-    } catch (e) {
-      console.error("Error en speakText:", e);
+    stopAll() {
+      for (const src of this.activeSources) {
+        try {
+          src.stop();
+        } catch (e) {}
+      }
+      this.activeSources = [];
+      window._isLiveAudioPlaying = false;
       isSpeaking = false;
+      if (this.audioCtx) {
+        this.nextStartTime = this.audioCtx.currentTime;
+      }
     }
   }
 
-  // 3. RECONOCIMIENTO DE VOZ Y WAKEWORD EN VIVO
-  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognitionEngine = null;
-  let isListening = false;
-  let isHandsFreeActive = true; // Permite responder a "Oye Viernes" continuamente
-  let silenceTimer = null;
-  let accumulatedTranscript = "";
+  window.liveAudioPlayer = new LiveAudioPlayer();
 
-  const btnMicText = btnTalkMic ? (btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic) : null;
+  // 2. CAPTURADOR DE AUDIO STREAMING (PCM 16-BIT 16kHz PARA GEMINI LIVE)
+  class LiveAudioRecorder {
+    constructor(onChunkCallback, onRmsCallback) {
+      this.onChunk = onChunkCallback;
+      this.onRms = onRmsCallback;
+      this.audioCtx = null;
+      this.mediaStream = null;
+      this.processor = null;
+      this.isRecording = false;
+    }
 
-  function setListeningUI(active, labelText = "HABLAR CON V.I.E.R.N.E.S.") {
-    isListening = active;
-    if (!btnTalkMic) return;
+    async start() {
+      if (this.isRecording) return true;
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new AudioCtx({ sampleRate: 16000 });
+        if (this.audioCtx.state === "suspended") {
+          await this.audioCtx.resume();
+        }
 
-    if (active) {
-      btnTalkMic.classList.add("is-listening");
-      if (btnMicText) btnMicText.textContent = labelText;
-      if (voiceStateTag) {
-        voiceStateTag.textContent = "🎙️ ESCUCHANDO TU VOZ...";
-        voiceStateTag.style.color = "var(--red-alert)";
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
+        // ScriptProcessorNode 1024 muestras (~64ms latencia ultra-baja)
+        this.processor = this.audioCtx.createScriptProcessor(1024, 1, 1);
+
+        this.processor.onaudioprocess = (e) => {
+          if (!this.isRecording) return;
+          const inputData = e.inputBuffer.getChannelData(0);
+
+          let sum = 0;
+          for (let i = 0; i < inputData.length; i++) {
+            sum += inputData[i] * inputData[i];
+          }
+          const rms = Math.sqrt(sum / inputData.length);
+          if (this.onRms) this.onRms(rms);
+
+          // Conversión Float32 a Int16 Little Endian
+          const pcm16 = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            let s = Math.max(-1, Math.min(1, inputData[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+
+          let binary = "";
+          const bytes = new Uint8Array(pcm16.buffer);
+          const len = bytes.byteLength;
+          for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          const b64 = btoa(binary);
+
+          if (this.onChunk) {
+            this.onChunk(b64);
+          }
+        };
+
+        source.connect(this.processor);
+        this.processor.connect(this.audioCtx.destination);
+        this.isRecording = true;
+        return true;
+      } catch (err) {
+        console.error("Error al iniciar micrófono:", err);
+        return false;
       }
-    } else {
-      btnTalkMic.classList.remove("is-listening");
-      if (btnMicText) btnMicText.textContent = labelText;
-      if (voiceStateTag && !isSpeaking) {
+    }
+
+    stop() {
+      this.isRecording = false;
+      if (this.processor) {
+        try {
+          this.processor.disconnect();
+        } catch (e) {}
+        this.processor = null;
+      }
+      if (this.mediaStream) {
+        try {
+          this.mediaStream.getTracks().forEach((t) => t.stop());
+        } catch (e) {}
+        this.mediaStream = null;
+      }
+      if (this.audioCtx) {
+        try {
+          this.audioCtx.close();
+        } catch (e) {}
+        this.audioCtx = null;
+      }
+    }
+  }
+
+  // 3. GESTIÓN DE SESIÓN DE VOZ EN VIVO (MANOS LIBRES / CONVERSACIONAL)
+  window._isLiveSessionActive = false;
+  window._isLocalAudioActive = false;
+  window._isLiveAudioPlaying = false;
+
+  const liveAudioRecorder = new LiveAudioRecorder(
+    (b64Chunk) => {
+      // Enviar frame de audio PCM 16kHz al WebSocket
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "audio_in",
+          data: b64Chunk
+        }));
+      }
+    },
+    (rms) => {
+      // Si el usuario está hablando (RMS alto), modular el Arc Reactor
+      if (rms > 0.03 && !window._isLiveAudioPlaying) {
+        window._isLocalAudioActive = true;
+        currentAudioRms = Math.min(0.95, rms * 4.5);
+      } else {
+        window._isLocalAudioActive = false;
+      }
+    }
+  );
+
+  async function toggleLiveVoiceSession() {
+    if (window._isLiveSessionActive) {
+      // Detener sesión
+      liveAudioRecorder.stop();
+      window._isLiveSessionActive = false;
+      window.liveAudioPlayer.stopAll();
+
+      if (btnTalkMic) {
+        btnTalkMic.classList.remove("is-listening");
+        const txt = btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic;
+        if (txt) txt.textContent = "HABLAR CON V.I.E.R.N.E.S.";
+      }
+      if (voiceStateTag) {
         voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
         voiceStateTag.style.color = "var(--cyan-stark)";
       }
-    }
-  }
+      appendLog("VOZ", "Sesión de voz en vivo pausada.", "log-info");
+    } else {
+      // Iniciar sesión
+      // Asegurar que el AudioContext de reproducción esté desbloqueado por la interacción del usuario
+      window.liveAudioPlayer.init();
 
-  function initSpeechRecognition() {
-    if (!SpeechRec) {
-      console.warn("SpeechRecognition no soportado en este navegador.");
-      return null;
-    }
-
-    const rec = new SpeechRec();
-    rec.lang = "es-CL";
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-
-    rec.onstart = () => {
-      if (isListening) {
-        setListeningUI(true, "🎙️ ESCUCHANDO...");
-        StarkAudio.playBlip(750, 0.04);
-      }
-    };
-
-    rec.onresult = (event) => {
-      let interim = "";
-      let finalChunk = "";
-
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const text = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalChunk += text;
-        } else {
-          interim += text;
-        }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "start_live_session" }));
+      } else {
+        connectWs();
       }
 
-      const currentLiveText = (accumulatedTranscript + " " + finalChunk + " " + interim).trim();
-      const lower = currentLiveText.toLowerCase();
-
-      // Detección de Wakeword en caliente ("oye viernes", "viernes", "hey viernes")
-      const wakewords = ["oye viernes", "hey viernes", "viernes", "okey viernes"];
-      const containsWakeword = wakewords.some(w => lower.includes(w));
-
-      if (containsWakeword && !isListening) {
-        // Activación inmediata por voz sin necesidad de hacer clic
-        setListeningUI(true, "🎙️ WAKEWORD DETECTADO...");
+      const ok = await liveAudioRecorder.start();
+      if (ok) {
+        window._isLiveSessionActive = true;
         StarkAudio.playSuccess();
-        appendLog("VOZ", `Wakeword detectado: "${currentLiveText}"`, "log-info");
-      }
 
-      if (isListening) {
-        if (promptInput) {
-          promptInput.value = currentLiveText;
+        if (btnTalkMic) {
+          btnTalkMic.classList.add("is-listening");
+          const txt = btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic;
+          if (txt) txt.textContent = "🔴 CONVERSACIÓN EN VIVO (HABLANDO)";
         }
-
-        // Modulación visual del Arc Reactor con la voz
-        currentAudioRms = Math.min(0.85, 0.15 + (interim.length % 5) * 0.12);
-
-        // Temporizador de silencio: si el usuario calla 1.2 segundos, enviar comando
-        if (silenceTimer) clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-          if (promptInput && promptInput.value.trim().length > 0) {
-            submitVoiceCommand(promptInput.value.trim());
-          }
-        }, 1300);
-      }
-
-      if (finalChunk) {
-        accumulatedTranscript = (accumulatedTranscript + " " + finalChunk).trim();
-      }
-    };
-
-    rec.onerror = (event) => {
-      const err = event.error;
-      if (err === "no-speech" || err === "aborted") return;
-
-      setListeningUI(false);
-      if (err === "not-allowed" || err === "service-not-allowed") {
-        appendLog("VOZ", "Permiso de micrófono no otorgado. Habilita el micrófono en el candado de la URL.", "log-warn");
+        if (voiceStateTag) {
+          voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // HABLA LIBREMENTE";
+          voiceStateTag.style.color = "var(--red-alert)";
+        }
+        appendLog("VOZ", "🎙️ Transmisión de voz en vivo activada: Gemini Live te escucha en tiempo real.", "log-success");
+      } else {
+        appendLog("VOZ", "No se pudo acceder al micrófono. Verifica los permisos en la barra de URL.", "log-warn");
         StarkAudio.playAlert();
-      } else {
-        appendLog("VOZ", `Aviso SpeechRecognition: ${err}`, "log-warn");
       }
-    };
-
-    rec.onend = () => {
-      // Auto-reinicio para mantener el modo Manos Libres ("OYE VIERNES") siempre disponible
-      if (isHandsFreeActive && !isSpeaking) {
-        try {
-          rec.start();
-        } catch (e) {}
-      } else {
-        setListeningUI(false);
-      }
-    };
-
-    return rec;
-  }
-
-  function startSpeechEngine(isPassiveWakeMode = false) {
-    if (!recognitionEngine) {
-      recognitionEngine = initSpeechRecognition();
-    }
-    if (!recognitionEngine) return;
-
-    accumulatedTranscript = "";
-    if (silenceTimer) clearTimeout(silenceTimer);
-
-    if (!isPassiveWakeMode) {
-      setListeningUI(true, "🎙️ ESCUCHANDO...");
-    }
-
-    try {
-      recognitionEngine.start();
-    } catch (e) {
-      // Ya estaba iniciado
     }
   }
 
-  async function submitVoiceCommand(commandText) {
-    if (!commandText) return;
-    accumulatedTranscript = "";
-    if (silenceTimer) clearTimeout(silenceTimer);
+  if (btnTalkMic) {
+    btnTalkMic.addEventListener("click", toggleLiveVoiceSession);
+  }
 
-    // Pausar escucha durante el envío y la síntesis de voz
-    if (recognitionEngine) {
-      try { recognitionEngine.stop(); } catch (e) {}
-    }
-    setListeningUI(false);
-
-    if (promptInput) promptInput.value = "";
-    appendLog("BRUNO", commandText, "log-info");
+  // 4. ENVÍO DE PROMPT DE TEXTO
+  btnPromptSend?.addEventListener("click", async () => {
+    const text = promptInput ? promptInput.value.trim() : "";
+    if (!text) return;
+    promptInput.value = "";
+    appendLog("BRUNO", text, "log-info");
     StarkAudio.playBlip(800, 0.04);
 
     if (btnPromptSend) {
@@ -1111,66 +1184,34 @@ document.addEventListener("DOMContentLoaded", () => {
       btnPromptSend.textContent = "...";
     }
 
-    try {
-      const res = await secureFetch("/api/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: commandText })
-      });
-      const data = await res.json();
-
-      if (res.ok && data && data.response) {
-        appendLog("VIERNES", data.response, "log-system");
-        speakText(data.response);
-      } else {
-        const errorText = data?.detail || data?.error || "No fue posible procesar la solicitud.";
-        appendLog("VIERNES", errorText, "log-warn");
-        speakText(errorText);
-      }
-      loadMemory();
-    } catch (e) {
-      appendLog("VIERNES", "Error de comunicación con el núcleo V.I.E.R.N.E.S.", "log-warn");
-    } finally {
+    // Si WebSocket está conectado, enviar por WS
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "prompt", prompt: text }));
       if (btnPromptSend) {
         btnPromptSend.disabled = false;
         btnPromptSend.textContent = "ENVIAR";
       }
-    }
-  }
-
-  // 4. MANEJADOR DEL BOTÓN "HABLAR CON V.I.E.R.N.E.S."
-  async function handleMicButtonClick() {
-    if (isListening) {
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (promptInput && promptInput.value.trim()) {
-        submitVoiceCommand(promptInput.value.trim());
-      } else {
-        if (recognitionEngine) {
-          try { recognitionEngine.stop(); } catch (e) {}
-        }
-        setListeningUI(false);
-      }
-      return;
-    }
-
-    if (SpeechRec) {
-      startSpeechEngine(false);
     } else {
-      appendLog("VOZ", "SpeechRecognition no disponible en el navegador. Activando escucha en Pi 5...", "log-info");
-      setListeningUI(true, "ESCUCHANDO (PI 5)...");
-      await secureFetch("/api/wakeword/trigger", { method: "POST" });
-      setTimeout(() => setListeningUI(false), 4000);
+      try {
+        const res = await secureFetch("/api/prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: text })
+        });
+        const data = await res.json();
+        if (res.ok && data && data.response) {
+          appendLog("VIERNES", data.response, "log-system");
+        }
+      } catch (e) {
+        appendLog("VIERNES", "Error al enviar comando.", "log-warn");
+      } finally {
+        if (btnPromptSend) {
+          btnPromptSend.disabled = false;
+          btnPromptSend.textContent = "ENVIAR";
+        }
+      }
     }
-  }
-
-  if (btnTalkMic) {
-    btnTalkMic.addEventListener("click", handleMicButtonClick);
-  }
-
-  btnPromptSend?.addEventListener("click", async () => {
-    const text = promptInput ? promptInput.value.trim() : "";
-    if (!text) return;
-    submitVoiceCommand(text);
+    loadMemory();
   });
 
   promptInput?.addEventListener("keydown", (e) => {

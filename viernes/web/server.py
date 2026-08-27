@@ -5,6 +5,7 @@ Protección contra IDOR, XSS, Hijacking de WebSockets/WebRTC, Brute Force y Rate
 
 import os
 import json
+import base64
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
@@ -142,13 +143,29 @@ ws_manager = ConnectionManager()
 
 
 async def on_system_event(event: Event):
-    await ws_manager.broadcast({
-        "type": "event",
-        "topic": event.topic,
-        "data": event.data,
-        "sender": event.sender,
-        "timestamp": event.timestamp,
-    })
+    if event.topic == "ai/audio_chunk":
+        await ws_manager.broadcast({
+            "type": "audio_out",
+            "data": event.data.get("data"),
+            "mimeType": event.data.get("mimeType", "audio/pcm;rate=24000")
+        })
+    elif event.topic == "ai/interrupted":
+        await ws_manager.broadcast({"type": "interrupted"})
+    elif event.topic == "ai/turn_complete":
+        await ws_manager.broadcast({"type": "turn_complete"})
+    elif event.topic == "ai/text_response":
+        await ws_manager.broadcast({
+            "type": "model_text",
+            "text": event.data.get("text")
+        })
+    else:
+        await ws_manager.broadcast({
+            "type": "event",
+            "topic": event.topic,
+            "data": event.data,
+            "sender": event.sender,
+            "timestamp": event.timestamp,
+        })
 
 bus.subscribe("*", on_system_event)
 
@@ -719,21 +736,70 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
         return
 
     await ws_manager.connect(websocket)
-    try:
-        while True:
-            telemetry = SystemTelemetry.get_full_status()
-            telemetry["audio_rms"] = audio_pipeline.current_volume_rms
-            telemetry["is_speaking"] = gemini_client.is_speaking
-            telemetry["is_connected_ai"] = gemini_client.is_connected
-            telemetry["active_model"] = models_manager.active_model
 
-            await websocket.send_json({
-                "type": "telemetry",
-                "data": telemetry
-            })
-            await asyncio.sleep(1.0)
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
-    except Exception as e:
-        logger.debug(f"Desconexión de websocket: {e}")
+    async def _send_telemetry_loop():
+        try:
+            while True:
+                telemetry = SystemTelemetry.get_full_status()
+                telemetry["audio_rms"] = audio_pipeline.current_volume_rms
+                telemetry["is_speaking"] = gemini_client.is_speaking
+                telemetry["is_connected_ai"] = gemini_client.is_connected
+                telemetry["active_model"] = models_manager.active_model
+
+                await websocket.send_json({
+                    "type": "telemetry",
+                    "data": telemetry
+                })
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
+    async def _receive_client_loop():
+        try:
+            while True:
+                msg_raw = await websocket.receive_text()
+                try:
+                    payload = json.loads(msg_raw)
+                    m_type = payload.get("type")
+
+                    if m_type == "audio_in":
+                        # Chunks de audio PCM 16kHz en Base64 desde el micrófono del navegador
+                        b64_pcm = payload.get("data")
+                        if b64_pcm:
+                            pcm_bytes = base64.b64decode(b64_pcm)
+                            await gemini_client.feed_audio_chunk(pcm_bytes)
+
+                    elif m_type == "start_live_session":
+                        logger.info("🎙️ Sesión de voz dúplex activada desde el HUD.")
+                        if not gemini_client.is_connected:
+                            await gemini_client.connect()
+                        await websocket.send_json({"type": "session_status", "status": "active"})
+
+                    elif m_type == "prompt":
+                        prompt_text = payload.get("prompt", "")
+                        if prompt_text:
+                            reply = await gemini_client.send_text_prompt(prompt_text)
+                            await websocket.send_json({
+                                "type": "prompt_response",
+                                "prompt": prompt_text,
+                                "response": reply
+                            })
+
+                except Exception as ex:
+                    logger.debug(f"Error procesando frame del cliente: {ex}")
+
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    telemetry_task = asyncio.create_task(_send_telemetry_loop())
+    client_task = asyncio.create_task(_receive_client_loop())
+
+    try:
+        done, pending = await asyncio.wait(
+            [telemetry_task, client_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+    finally:
         ws_manager.disconnect(websocket)
