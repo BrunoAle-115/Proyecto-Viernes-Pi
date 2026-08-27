@@ -1,6 +1,6 @@
 """
 Registro de Herramientas y Function Calling para Gemini Live en V.I.E.R.N.E.S.
-Conecta las intenciones del modelo con las acciones reales del hardware y servicios.
+Conecta las intenciones del modelo con las acciones reales del hardware, IoT, noticias, clima y memoria personal.
 """
 
 import json
@@ -15,6 +15,10 @@ from viernes.integrations.github_monitor import github_monitor
 from viernes.scheduler.reminder_engine import reminder_engine
 from viernes.telephony.sip_manager import sip_mgr
 from viernes.core.telemetry import SystemTelemetry
+from viernes.services.news_chile import chile_news
+from viernes.services.weather_engine import weather_engine
+from viernes.memory.mini_rag import personal_rag
+from viernes.core.models_manager import models_manager
 
 logger = logging.getLogger("viernes.tools")
 
@@ -54,6 +58,68 @@ GEMINI_TOOL_DECLARATIONS = [
                 }
             },
             "required": ["target", "action"]
+        }
+    },
+    {
+        "name": "get_chile_news",
+        "description": "Obtiene las noticias y titulares más importantes de Chile en tiempo real desde Canal 13 (T13), BioBioChile y Cooperativa.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "limit": {
+                    "type": "INTEGER",
+                    "description": "Número máximo de titulares a obtener (por defecto 4)."
+                }
+            }
+        }
+    },
+    {
+        "name": "get_weather_forecast",
+        "description": "Consulta el clima actual, pronóstico por hora y probabilidad de lluvia/precipitaciones para ciudades de Chile (Santiago, Valparaíso, Concepción, etc.).",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {
+                    "type": "STRING",
+                    "description": "Ciudad de Chile a consultar (ej: 'santiago', 'valparaiso', 'concepcion')."
+                }
+            }
+        }
+    },
+    {
+        "name": "store_personal_memory",
+        "description": "Guarda un recuerdo, preferencia personal, rutina, nota o información clave sobre el usuario en la base de datos de memoria Mini-RAG.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "category": {
+                    "type": "STRING",
+                    "description": "Categoría: 'routine', 'preference', 'project', 'note', 'contact'."
+                },
+                "key_concept": {
+                    "type": "STRING",
+                    "description": "Concepto clave o etiqueta única (ej: 'cumpleanos_mama', 'rutina_ejercicio', 'preferencia_cafe')."
+                },
+                "content": {
+                    "type": "STRING",
+                    "description": "Detalle completo de la memoria a recordar."
+                }
+            },
+            "required": ["category", "key_concept", "content"]
+        }
+    },
+    {
+        "name": "recall_personal_memory",
+        "description": "Recupera recuerdos, rutinas o preferencias guardadas del usuario consultando el Mini-RAG.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {
+                    "type": "STRING",
+                    "description": "Término de búsqueda o pregunta sobre lo que se desea recordar."
+                }
+            },
+            "required": ["query"]
         }
     },
     {
@@ -135,7 +201,7 @@ GEMINI_TOOL_DECLARATIONS = [
     },
     {
         "name": "get_morning_briefing",
-        "description": "Genera el informe matutino consolidado con telemetría del sistema, correos importantes y estado de GitHub.",
+        "description": "Genera el informe matutino consolidado con telemetría del sistema, clima con alerta de lluvia, noticias de Chile, correos importantes y estado de GitHub.",
         "parameters": {
             "type": "OBJECT",
             "properties": {}
@@ -160,6 +226,29 @@ class ToolsDispatcher:
                 action = args.get("action", "toggle")
                 brightness = args.get("brightness", 100)
                 return await device_mgr.execute_control_light(target, state=action, brightness=brightness)
+
+            elif name == "get_chile_news":
+                limit = args.get("limit", 4)
+                news = await chile_news.get_top_news(limit=limit)
+                summary_voice = await chile_news.get_voice_news_briefing()
+                return {"success": True, "count": len(news), "news": news, "voice_summary": summary_voice}
+
+            elif name == "get_weather_forecast":
+                city = args.get("city", "santiago")
+                weather = await weather_engine.get_forecast(city)
+                voice_summary = await weather_engine.get_voice_weather_summary(city)
+                return {"success": True, "weather": weather, "voice_summary": voice_summary}
+
+            elif name == "store_personal_memory":
+                cat = args.get("category", "note")
+                key = args.get("key_concept", "nota_general")
+                content = args.get("content", "")
+                return await personal_rag.store_memory(category=cat, key_concept=key, content=content)
+
+            elif name == "recall_personal_memory":
+                query = args.get("query", "")
+                memories = await personal_rag.recall_memories(query=query)
+                return {"success": True, "count": len(memories), "memories": memories}
 
             elif name == "scan_local_network":
                 devices = await device_mgr.scan_and_update()

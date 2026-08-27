@@ -151,28 +151,39 @@ class ReminderEngine:
         from viernes.mail.zoho_client import zoho_client
         from viernes.integrations.github_monitor import github_monitor
         from viernes.core.telemetry import SystemTelemetry
+        from viernes.services.weather_engine import weather_engine
+        from viernes.services.news_chile import chile_news
 
         now_str = datetime.now().strftime("%A %d de %B, %H:%M")
         unread_gmail = await gmail_client.get_unread_emails(max_results=5, only_important=True)
         unread_zoho = zoho_client.get_unread_emails(max_results=5, only_important=True)
         gh_data = await github_monitor.get_pull_requests_summary()
         telemetry = SystemTelemetry.get_full_status()
+        weather = await weather_engine.get_forecast("santiago")
+        top_news = await chile_news.get_top_news(limit=2)
 
-        briefing = f"Buenos días, señor. Hoy es {now_str}.\n"
-        briefing += f"El sistema de la Raspberry Pi 5 se encuentra al 100% de capacidad operativa, con una temperatura de CPU de {telemetry['cpu']['temperature_c']} grados.\n"
+        briefing = f"Buenos días, señor Bruno. Hoy es {now_str}.\n"
+        briefing += f"El clima en {weather['city']} es de {weather['current_temp']} grados con {weather['condition'].lower()}.\n"
+        if weather["will_rain"]:
+            briefing += f"Atención: Hay un {weather['max_rain_probability']} por ciento de probabilidad de precipitaciones durante el día.\n"
+        else:
+            briefing += "No se esperan lluvias para el día de hoy.\n"
 
         total_mails = len(unread_gmail) + len(unread_zoho)
         if total_mails > 0:
-            briefing += f"He revisado su bandeja y tiene {total_mails} correos clasificados como prioritarios tras descartar promociones y boletines.\n"
+            briefing += f"Tiene {total_mails} correos clasificados como prioritarios pendientes de revisión.\n"
         else:
-            briefing += "No tiene correos urgentes pendientes en Gmail ni Zoho.\n"
+            briefing += "Bandeja de entrada al día sin correos urgentes.\n"
 
         if gh_data.get("prs"):
             approved = [p for p in gh_data["prs"] if p.get("status") == "APPROVED"]
             if approved:
                 briefing += f"En GitHub, su Pull Request '{approved[0].get('title')}' ya cuenta con aprobación.\n"
 
-        briefing += "¿En qué puedo asistirle el día de hoy, señor?"
+        if top_news:
+            briefing += f"En las noticias destacadas de Chile: {top_news[0]['title']}.\n"
+
+        briefing += f"Todos los sistemas de la Raspberry Pi 5 operan nominales a {telemetry['cpu']['temperature_c']} grados. ¿En qué puedo asistirle hoy?"
         return briefing
 
 
