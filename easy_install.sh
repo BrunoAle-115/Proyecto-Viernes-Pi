@@ -148,6 +148,7 @@ StartLimitBurst=5
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONPATH=$PROJECT_DIR"
 LimitNOFILE=65536
 
 [Install]

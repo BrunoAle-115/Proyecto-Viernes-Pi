@@ -6,11 +6,17 @@ import os
 import sys
 import asyncio
 import logging
+
+# Garantizar que el directorio raíz del proyecto esté en sys.path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import uvicorn
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env
-load_dotenv()
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 # Configurar Logging
 logging.basicConfig(
