@@ -236,18 +236,26 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   checkAuth();
 
-  btnLoginSubmit.addEventListener("click", async () => {
-    authErrorMsg.textContent = "";
-    const email = loginEmail.value.trim();
-    const password = loginPassword.value;
+  window.handleLoginSubmit = async () => {
+    const errorEl = document.getElementById("auth-error-msg");
+    const emailEl = document.getElementById("login-email");
+    const passEl = document.getElementById("login-password");
+    const submitBtn = document.getElementById("btn-login-submit");
+    const overlay = document.getElementById("auth-modal-overlay");
+
+    if (errorEl) errorEl.textContent = "";
+    const email = (emailEl ? emailEl.value : "").trim();
+    const password = passEl ? passEl.value : "";
 
     if (!email || !password) {
-      authErrorMsg.textContent = "Por favor ingresa correo y contraseña.";
+      if (errorEl) errorEl.textContent = "Por favor ingresa correo y contraseña.";
       return;
     }
 
-    btnLoginSubmit.disabled = true;
-    btnLoginSubmit.textContent = "AUTENTICANDO...";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "AUTENTICANDO...";
+    }
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -259,24 +267,38 @@ document.addEventListener("DOMContentLoaded", () => {
       if (res.ok && data.success) {
         authToken = data.token;
         localStorage.setItem("viernes_auth_token", authToken);
-        authOverlay.style.display = "none";
+        if (overlay) overlay.style.display = "none";
         appendLog("AUTH", `Bienvenido señor Bruno (${escapeHtml(email)}). Acceso táctico concedido.`, "log-success");
         loadAllData();
         connectWs();
       } else {
-        authErrorMsg.textContent = data.detail || "Contraseña o correo no autorizados.";
+        if (errorEl) errorEl.textContent = data.detail || "Contraseña o correo no autorizados.";
       }
     } catch (err) {
-      authErrorMsg.textContent = "Error conectando con el servidor de autenticación.";
+      if (errorEl) errorEl.textContent = "Error conectando con el servidor de autenticación.";
     } finally {
-      btnLoginSubmit.disabled = false;
-      btnLoginSubmit.textContent = "AUTORIZAR ACCESO";
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "INICIAR SESIÓN EN V.I.E.R.N.E.S.";
+      }
     }
-  });
+  };
 
-  loginPassword.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") btnLoginSubmit.click();
-  });
+  if (btnLoginSubmit) {
+    btnLoginSubmit.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.handleLoginSubmit();
+    });
+  }
+
+  if (loginPassword) {
+    loginPassword.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        window.handleLoginSubmit();
+      }
+    });
+  }
 
   btnLogout.addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });

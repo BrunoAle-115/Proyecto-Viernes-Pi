@@ -6,7 +6,7 @@
   <title>V.I.E.R.N.E.S. 2.0 // STARK INDUSTRIES HUD</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="alternate icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/static/css/hud.css?v=2.6">
+  <link rel="stylesheet" href="/static/css/hud.css?v=3.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -23,21 +23,21 @@
       <h2 class="auth-title">STARK AI SECURITY</h2>
       <p class="auth-subtitle">IDENTIFICACIÓN BIOMÉTRICA / CREDENCIALES REQUERIDAS</p>
       
-      <div class="auth-form">
+      <form class="auth-form" id="auth-form" onsubmit="event.preventDefault(); window.handleLoginSubmit();">
         <div class="input-group">
           <label>USUARIO AUTORIZADO</label>
-          <input type="email" id="login-email" value="brunourrea502@gmail.com" placeholder="correo@ejemplo.com" />
+          <input type="email" id="login-email" value="brunourrea502@gmail.com" placeholder="correo@ejemplo.com" autocomplete="username" />
         </div>
         <div class="input-group">
           <label>CONTRASEÑA MAESTRA</label>
-          <input type="password" id="login-password" placeholder="••••••••••••" />
+          <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" />
         </div>
         <div class="auth-error-msg" id="auth-error-msg"></div>
-        <button class="btn-stark btn-glow" id="btn-login-submit" style="width: 100%; margin-top: 8px;">
+        <button type="submit" class="btn-stark btn-glow" id="btn-login-submit" onclick="window.handleLoginSubmit();" style="width: 100%; margin-top: 8px;">
           INICIAR SESIÓN EN V.I.E.R.N.E.S.
         </button>
         <p class="auth-cli-hint">¿Olvidaste tu contraseña? Recuperación exclusiva por terminal CLI:<br><code>python scripts/reset_password.py</code></p>
-      </div>
+      </form>
     </div>
   </div>
 
@@ -307,6 +307,6 @@
     </footer>
   </div>
 
-  <script src="/static/js/hud.js?v=2.6"></script>
+  <script src="/static/js/hud.js?v=3.0"></script>
 </body>
 </html>

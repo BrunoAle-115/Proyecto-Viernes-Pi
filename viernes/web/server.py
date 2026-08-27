@@ -225,13 +225,19 @@ def get_current_user(session_token: Optional[str] = Cookie(default=None), reques
 @app.post("/api/auth/login")
 async def api_login(req: LoginRequest, request: Request, response: Response):
     client_ip = request.client.host if request.client else "127.0.0.1"
-    if not auth_rate_limiter.is_allowed(client_ip):
+    logger.info(f"Intento de autenticación recibido desde {client_ip} para: {req.email}")
+
+    # No bloquear IPs de LAN privada ni localhost
+    is_lan = client_ip in ("127.0.0.1", "localhost", "::1") or client_ip.startswith("192.168.") or client_ip.startswith("10.")
+    if not is_lan and not auth_rate_limiter.is_allowed(client_ip):
         raise HTTPException(status_code=429, detail="Demasiados intentos de acceso. Bloqueo temporal por 60 segundos.")
 
     token = auth_mgr.authenticate(req.email, req.password)
     if not token:
-        raise HTTPException(status_code=400, detail="Credenciales no autorizadas")
+        logger.warning(f"❌ Autenticación rechazada para: {req.email}")
+        raise HTTPException(status_code=400, detail="Contraseña o correo no válidos.")
 
+    logger.info(f"✓ Acceso táctico concedido a: {req.email}")
     response.set_cookie(
         key="session_token",
         value=token,

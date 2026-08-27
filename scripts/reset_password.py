@@ -112,7 +112,7 @@ def main():
         if args.stdin or not sys.stdin.isatty():
             new_password = sys.stdin.readline().rstrip("\r\n")
             if not new_password:
-                print(f"{RED}[✗] Error: Se recibió una contraseña vacía por STDIN.{RESET}", file=sys.stderr)
+                print(f"{RED}[!] Error: Se recibio una contrasena vacia por STDIN.{RESET}", file=sys.stderr)
                 sys.exit(1)
         else:
             new_password = prompt_password_interactive()
@@ -122,10 +122,10 @@ def main():
     # Ejecutar reset en el AuthManager
     success = auth_mgr.reset_password(email, new_password)
     if success:
-        print(f"\n{GREEN}{BOLD}[✓] Contraseña para '{email}' actualizada exitosamente.{RESET}")
+        print(f"\n{GREEN}{BOLD}[OK] Contrasena para '{email}' actualizada exitosamente.{RESET}")
         print(f"{CYAN}[i] Acceso al Stark HUD Dashboard habilitado.{RESET}\n")
     else:
-        print(f"\n{RED}[✗] Error al actualizar la base de datos de usuarios.{RESET}", file=sys.stderr)
+        print(f"\n{RED}[!] Error al actualizar la base de datos de usuarios.{RESET}", file=sys.stderr)
         sys.exit(1)
 
 
