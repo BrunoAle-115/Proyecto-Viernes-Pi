@@ -926,7 +926,6 @@ document.addEventListener("DOMContentLoaded", () => {
       this.leftoverBytes = null;
       this.isPlaying = false;
       this.leadTime = 0.025; // 25ms jitter buffer óptimo para absorber jitter sin desfase
-      this.maxDrift = 0.500; // 500ms umbral seguro para resincronización de drift temporal
       this.lastAudioEndTime = 0;
       this.hangoverDurationMs = 250; // 250ms de protección acústica anti-reverberación
       this.playbackDebounceTimer = null;
@@ -1045,8 +1044,8 @@ document.addEventListener("DOMContentLoaded", () => {
         source.buffer = audioBuffer;
         source.connect(this.gainNode);
 
-        // 6. Scheduling Temporal Secuencial (Continuous Gapless Chaining + Safe Drift Protection)
-        if (this.nextStartTime < now || (this.nextStartTime - now) > this.maxDrift) {
+        // 6. Scheduling Temporal Continuo Estricto (Timeline Secuencial FIFO Sin Solapamiento)
+        if (this.nextStartTime < now) {
           this.nextStartTime = now + this.leadTime;
         }
 
