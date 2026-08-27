@@ -21,7 +21,7 @@ except ImportError:
 
 # API de Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
 GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
 VOICE_NAME = os.getenv("VOICE_NAME", "Aoede")  # Aoede, Puck, Charon, Kore, Fenrir
 

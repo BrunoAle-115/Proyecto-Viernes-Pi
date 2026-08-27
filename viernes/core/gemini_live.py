@@ -180,7 +180,7 @@ class GeminiLiveClient:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         # Obtener modelo dinámicamente sin hardcoding
-        initial_model = model or os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
+        initial_model = model or os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
         if not initial_model.startswith("models/"):
             initial_model = f"models/{initial_model}"
         self.model = initial_model
@@ -201,9 +201,9 @@ class GeminiLiveClient:
     @property
     def active_live_model(self) -> str:
         """Devuelve el modelo normalizado para Live WebSocket."""
-        m = getattr(self, "model", None) or getattr(self, "model_name", None) or os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
-        if not m or "3.1" in m:
-            m = "models/gemini-2.0-flash-exp"
+        m = getattr(self, "model", None) or getattr(self, "model_name", None) or os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
+        if not m or "3.1" in m or "2.0-flash-exp" in m:
+            m = "models/gemini-2.5-flash-native-audio-latest"
         return m if m.startswith("models/") else f"models/{m}"
 
     def _build_setup_message(self) -> dict:
