@@ -132,11 +132,16 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: Dict[str, Any]):
-        for connection in list(self.active_connections):
+        if not self.active_connections:
+            return
+
+        async def _safe_send(ws: WebSocket):
             try:
-                await connection.send_json(message)
+                await ws.send_json(message)
             except Exception:
-                self.disconnect(connection)
+                self.disconnect(ws)
+
+        await asyncio.gather(*[_safe_send(conn) for conn in list(self.active_connections)], return_exceptions=True)
 
 
 ws_manager = ConnectionManager()

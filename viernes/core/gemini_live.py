@@ -50,6 +50,132 @@ Personalidad y directrices:
 GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
 
 
+class AudioChunkPacer:
+    """
+    Regulador y acumulador de flujo de audio PCM16 @ 16kHz para Gemini Live API.
+    - Acumula trozos pequeños en fragmentos exactos de 100ms (3200 bytes).
+    - Auto-flush mediante temporizador de 120ms para fonemas finales.
+    - Purga inmediata ante interrupción (Barge-in).
+    - Prevención de Bufferbloat con cola de salida acotada.
+    """
+    def __init__(
+        self,
+        send_coro,
+        target_chunk_bytes: int = 3200,   # 100ms @ 16kHz PCM16 (1600 muestras * 2 bytes)
+        flush_timeout: float = 0.12,      # 120ms sin nuevos datos dispara flush del remanente
+        max_queue_size: int = 15          # Max ~1.5s de audio en cola
+    ):
+        self.send_coro = send_coro
+        self.target_chunk_bytes = target_chunk_bytes
+        self.flush_timeout = flush_timeout
+        self.max_queue_size = max_queue_size
+
+        self._buffer = bytearray()
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
+        self._flush_handle: Optional[asyncio.TimerHandle] = None
+        self._worker_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+        self._running = False
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._buffer.clear()
+        self._worker_task = asyncio.create_task(self._worker_loop())
+
+    async def stop(self):
+        self._running = False
+        if self._flush_handle:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+        self.reset()
+
+    def reset(self):
+        """Purga atómica del buffer ante Barge-in o reset de sesión."""
+        if self._flush_handle:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        self._buffer.clear()
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except Exception:
+                break
+
+    async def push_pcm(self, pcm_data: bytes):
+        """Ingresa datos PCM arbitrarios y acumula en chunks regulados."""
+        if not self._running or not pcm_data:
+            return
+
+        async with self._lock:
+            self._buffer.extend(pcm_data)
+
+            # Extraer bloques enteros de 100ms (3200 bytes)
+            while len(self._buffer) >= self.target_chunk_bytes:
+                chunk_bytes = bytes(self._buffer[:self.target_chunk_bytes])
+                del self._buffer[:self.target_chunk_bytes]
+                b64_data = base64.b64encode(chunk_bytes).decode("utf-8")
+                self._enqueue_b64(b64_data)
+
+            # Si queda remanente, reiniciar timer de flush
+            if len(self._buffer) > 0:
+                if self._flush_handle:
+                    self._flush_handle.cancel()
+                try:
+                    loop = asyncio.get_running_loop()
+                    self._flush_handle = loop.call_later(self.flush_timeout, self._schedule_flush)
+                except RuntimeError:
+                    pass
+
+    def _schedule_flush(self):
+        if not self._running or len(self._buffer) == 0:
+            return
+        asyncio.create_task(self._flush_remaining())
+
+    async def _flush_remaining(self):
+        async with self._lock:
+            if len(self._buffer) > 0:
+                chunk_bytes = bytes(self._buffer)
+                self._buffer.clear()
+                b64_data = base64.b64encode(chunk_bytes).decode("utf-8")
+                self._enqueue_b64(b64_data)
+
+    def _enqueue_b64(self, b64_data: str):
+        try:
+            self._queue.put_nowait(b64_data)
+        except asyncio.QueueFull:
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except Exception:
+                pass
+            try:
+                self._queue.put_nowait(b64_data)
+            except Exception:
+                pass
+
+    async def _worker_loop(self):
+        """Transmite los chunks al WebSocket de Gemini Live de forma serializada y segura."""
+        while self._running:
+            try:
+                b64_data = await self._queue.get()
+                await self.send_coro(b64_data)
+                self._queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Error en AudioChunkPacer send: {e}")
+                await asyncio.sleep(0.01)
+
+
 class GeminiLiveClient:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
@@ -60,17 +186,24 @@ class GeminiLiveClient:
         self.model = initial_model
         self.model_name = initial_model
         self.ws = None
+        self.ws_lock = asyncio.Lock()
         self.is_connected = False
         self.is_speaking = False
         self._should_run = True
         self._listen_task: Optional[asyncio.Task] = None
         self._send_audio_task: Optional[asyncio.Task] = None
         self._supervisor_task: Optional[asyncio.Task] = None
+        self.pacer = AudioChunkPacer(
+            send_coro=self._send_media_chunk_direct,
+            target_chunk_bytes=3200  # 100ms exactos
+        )
 
     @property
     def active_live_model(self) -> str:
         """Devuelve el modelo normalizado para Live WebSocket."""
         m = getattr(self, "model", None) or getattr(self, "model_name", None) or os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
+        if not m or "3.1" in m:
+            m = "models/gemini-2.0-flash-exp"
         return m if m.startswith("models/") else f"models/{m}"
 
     def _build_setup_message(self) -> dict:
@@ -134,12 +267,14 @@ class GeminiLiveClient:
                 ) as ws:
                     self.ws = ws
                     self.is_connected = True
+                    self.pacer.start()
                     retry_delay = 2
                     logger.info("✓ Conexión WebSocket establecida con Gemini Live.")
 
                     # 1. Enviar Setup Handshake
                     setup_payload = self._build_setup_message()
-                    await self.ws.send(json.dumps(setup_payload))
+                    async with self.ws_lock:
+                        await self.ws.send(json.dumps(setup_payload))
                     logger.info(f"Setup inicial de Gemini Live enviado ({target_model}). Esperando confirmación...")
 
                     # 2. Esperar confirmación estricta de setupComplete antes de transmitir
@@ -172,6 +307,7 @@ class GeminiLiveClient:
                 self.is_connected = False
                 self.ws = None
                 self.is_speaking = False
+                await self.pacer.stop()
 
             if self._should_run:
                 logger.info(f"Reintentando conexión con Gemini Live en {retry_delay} segundos...")
@@ -212,6 +348,7 @@ class GeminiLiveClient:
                     if server_content.get("interrupted"):
                         logger.info("🛑 [Barge-in] Interrupción detectada. Vaciando buffer de audio.")
                         self.is_speaking = False
+                        self.pacer.reset()
                         audio_pipeline.interrupt_playback()
                         await bus.publish("ai/interrupted", {}, sender="gemini_live")
 
@@ -235,25 +372,45 @@ class GeminiLiveClient:
             logger.error(f"Error en receive_loop de Gemini Live: {e}")
             raise
 
-    async def feed_audio_chunk(self, pcm_bytes: bytes):
-        """Reenvía audio PCM 16kHz capturado desde el micrófono del navegador hacia Gemini Live."""
+    async def _send_audio_loop(self):
+        """Envía continuamente audio desde el micrófono local USB de la Pi hacia Gemini Live."""
+        try:
+            while self.is_connected and self.ws:
+                pcm_frame = await audio_pipeline.audio_queue_in.get()
+                if pcm_frame:
+                    await self.pacer.push_pcm(pcm_frame)
+                audio_pipeline.audio_queue_in.task_done()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error en send_audio_loop de Gemini Live: {e}")
+
+    async def _send_media_chunk_direct(self, b64_pcm: str):
+        """Envío serializado thread-safe hacia el WebSocket de Gemini Live."""
         if not self.is_connected or not self.ws:
             return
-        try:
-            b64_audio = base64.b64encode(pcm_bytes).decode("utf-8")
-            realtime_msg = {
-                "realtimeInput": {
-                    "mediaChunks": [
-                        {
-                            "mimeType": "audio/pcm;rate=16000",
-                            "data": b64_audio
-                        }
-                    ]
-                }
+        msg = {
+            "realtimeInput": {
+                "mediaChunks": [
+                    {
+                        "mimeType": "audio/pcm;rate=16000",
+                        "data": b64_pcm
+                    }
+                ]
             }
-            await self.ws.send(json.dumps(realtime_msg))
-        except Exception as e:
-            logger.debug(f"Error reenviando chunk de audio web a Gemini Live: {e}")
+        }
+        try:
+            async with self.ws_lock:
+                if self.ws and self.is_connected:
+                    await self.ws.send(json.dumps(msg))
+        except Exception as ex:
+            logger.debug(f"Error transmitiendo mediaChunk a Gemini: {ex}")
+
+    async def feed_audio_chunk(self, pcm_bytes: bytes):
+        """Reenvía audio PCM 16kHz capturado desde el navegador a través del regulador AudioChunkPacer."""
+        if not self.is_connected:
+            await self.connect()
+        await self.pacer.push_pcm(pcm_bytes)
 
     async def _handle_tool_call(self, tool_call: dict):
         """Ejecuta herramientas y responde con el esquema exacto de BidiGenerateContent."""

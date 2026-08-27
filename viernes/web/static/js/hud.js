@@ -889,52 +889,93 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- GEMINI LIVE MULTIMODAL DUPLEX AUDIO ENGINE (STARK INDUSTRIES) ---
   // =========================================================================
 
-  // 1. REPRODUCTOR DE AUDIO STREAMING (PCM 16-BIT 24kHz DE GEMINI LIVE)
+  // 1. REPRODUCTOR DE AUDIO EN TIEMPO REAL (PCM 16-BIT 24kHz -> WEBAUDIO DAC)
   class LiveAudioPlayer {
-    constructor() {
+    constructor(options = {}) {
+      this.sourceSampleRate = options.sourceSampleRate || 24000;
       this.audioCtx = null;
+      this.gainNode = null;
       this.nextStartTime = 0;
-      this.activeSources = [];
-      this.sampleRate = 24000;
+      this.activeSources = new Set();
+      this.leftoverBytes = null;
+      this.isPlaying = false;
+      this.leadTime = 0.025; // 25ms jitter buffer para fluidez
     }
 
-    init() {
+    initContext() {
       if (!this.audioCtx || this.audioCtx.state === "closed") {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioCtx({ sampleRate: this.sampleRate });
+        this.audioCtx = new AudioCtx();
+        this.gainNode = this.audioCtx.createGain();
+        this.gainNode.gain.value = 1.0;
+        this.gainNode.connect(this.audioCtx.destination);
       }
       if (this.audioCtx.state === "suspended") {
-        this.audioCtx.resume();
+        this.audioCtx.resume().catch(() => {});
+      }
+      return this.audioCtx;
+    }
+
+    async unlock() {
+      this.initContext();
+      if (this.audioCtx && this.audioCtx.state === "suspended") {
+        await this.audioCtx.resume();
       }
     }
 
     playChunk(base64Data) {
-      try {
-        this.init();
-        if (!base64Data) return;
+      if (!base64Data) return;
 
-        const binaryString = atob(base64Data);
-        const len = binaryString.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
+      try {
+        this.initContext();
+
+        // 1. Decodificación Base64
+        const binaryStr = atob(base64Data);
+        const incomingLen = binaryStr.length;
+        if (incomingLen === 0) return;
+
+        let totalBytes;
+        if (this.leftoverBytes && this.leftoverBytes.length > 0) {
+          totalBytes = new Uint8Array(this.leftoverBytes.length + incomingLen);
+          totalBytes.set(this.leftoverBytes, 0);
+          for (let i = 0; i < incomingLen; i++) {
+            totalBytes[this.leftoverBytes.length + i] = binaryStr.charCodeAt(i);
+          }
+          this.leftoverBytes = null;
+        } else {
+          totalBytes = new Uint8Array(incomingLen);
+          for (let i = 0; i < incomingLen; i++) {
+            totalBytes[i] = binaryStr.charCodeAt(i);
+          }
         }
 
-        const int16 = new Int16Array(bytes.buffer);
-        const numSamples = int16.length;
+        // 2. Manejo de alineación de 16 bits (múltiplos de 2)
+        const numBytes = totalBytes.length;
+        const isOdd = numBytes % 2 !== 0;
+        const processableBytes = isOdd ? numBytes - 1 : numBytes;
+        const numSamples = processableBytes / 2;
+
+        if (isOdd) {
+          this.leftoverBytes = new Uint8Array([totalBytes[numBytes - 1]]);
+        }
+
         if (numSamples === 0) return;
 
+        // 3. Conversión segura Little-Endian PCM 16-bit a Float32
+        const dataView = new DataView(totalBytes.buffer, totalBytes.byteOffset, processableBytes);
         const float32 = new Float32Array(numSamples);
         let sumSquares = 0;
+
         for (let i = 0; i < numSamples; i++) {
-          const val = int16[i] / 32768.0;
-          float32[i] = val;
-          sumSquares += val * val;
+          const int16 = dataView.getInt16(i * 2, true); // true = Little-Endian
+          const sample = int16 < 0 ? int16 / 32768.0 : int16 / 32767.0;
+          float32[i] = sample;
+          sumSquares += sample * sample;
         }
 
-        // Modulación visual del Arc Reactor (en dorado)
+        // 4. Modulación visual del Arc Reactor (Dorado Stark)
         const rms = Math.sqrt(sumSquares / numSamples);
-        currentAudioRms = Math.min(0.95, Math.max(0.1, rms * 4.0));
+        currentAudioRms = Math.min(0.95, Math.max(0.1, rms * 4.2));
         window._isLiveAudioPlaying = true;
         isSpeaking = true;
         if (voiceStateTag) {
@@ -942,26 +983,27 @@ document.addEventListener("DOMContentLoaded", () => {
           voiceStateTag.style.color = "var(--gold-stark)";
         }
 
-        const audioBuffer = this.audioCtx.createBuffer(1, numSamples, this.sampleRate);
+        // 5. Creación del AudioBuffer (resampling nativo del navegador a audioCtx.sampleRate)
+        const audioBuffer = this.audioCtx.createBuffer(1, numSamples, this.sourceSampleRate);
         audioBuffer.getChannelData(0).set(float32);
 
         const source = this.audioCtx.createBufferSource();
         source.buffer = audioBuffer;
-        source.connect(this.audioCtx.destination);
+        source.connect(this.gainNode);
 
         const now = this.audioCtx.currentTime;
         if (this.nextStartTime < now) {
-          this.nextStartTime = now + 0.02; // 20ms buffer para evitar chasquidos
+          this.nextStartTime = now + this.leadTime;
         }
 
         source.start(this.nextStartTime);
         this.nextStartTime += audioBuffer.duration;
 
-        this.activeSources.push(source);
+        this.activeSources.add(source);
         source.onended = () => {
-          const idx = this.activeSources.indexOf(source);
-          if (idx !== -1) this.activeSources.splice(idx, 1);
-          if (this.activeSources.length === 0) {
+          source.disconnect();
+          this.activeSources.delete(source);
+          if (this.activeSources.size === 0) {
             window._isLiveAudioPlaying = false;
             isSpeaking = false;
             currentAudioRms = 0.02;
@@ -972,17 +1014,19 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         };
       } catch (err) {
-        console.warn("LiveAudioPlayer error:", err);
+        console.error("[LiveAudioPlayer] Error procesando chunk:", err);
       }
     }
 
     stopAll() {
+      this.leftoverBytes = null;
       for (const src of this.activeSources) {
         try {
           src.stop();
+          src.disconnect();
         } catch (e) {}
       }
-      this.activeSources = [];
+      this.activeSources.clear();
       window._isLiveAudioPlaying = false;
       isSpeaking = false;
       if (this.audioCtx) {
@@ -991,31 +1035,88 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.liveAudioPlayer = new LiveAudioPlayer();
+  window.liveAudioPlayer = new LiveAudioPlayer({ sourceSampleRate: 24000 });
 
-  // 2. CAPTURADOR DE AUDIO STREAMING (PCM 16-BIT 16kHz PARA GEMINI LIVE)
+  // Desbloqueo de AudioContext en la primera interacción del usuario
+  const unlockUserGesture = () => {
+    if (window.liveAudioPlayer) {
+      window.liveAudioPlayer.unlock();
+    }
+  };
+  window.addEventListener("pointerdown", unlockUserGesture, { once: true, passive: true });
+  window.addEventListener("keydown", unlockUserGesture, { once: true, passive: true });
+
+  // 2. CAPTURADOR DE AUDIO STREAMING (MICRÓFONO -> RESAMPLE 16kHz PCM BASE64)
   class LiveAudioRecorder {
     constructor(onChunkCallback, onRmsCallback) {
       this.onChunk = onChunkCallback;
       this.onRms = onRmsCallback;
+      this.targetSampleRate = 16000;
       this.audioCtx = null;
       this.mediaStream = null;
       this.processor = null;
+      this.sourceNode = null;
+      this.silentGain = null;
       this.isRecording = false;
+
+      // Pacer interno: 1600 muestras = 100ms a 16kHz
+      this.TARGET_SAMPLES = 1600;
+      this.sampleBuffer = new Int16Array(this.TARGET_SAMPLES * 4);
+      this.sampleBufferIndex = 0;
+      this.flushTimer = null;
+    }
+
+    _downsampleBuffer(buffer, inSampleRate, outSampleRate) {
+      if (inSampleRate === outSampleRate) return buffer;
+      if (inSampleRate < outSampleRate) return buffer;
+      const ratio = inSampleRate / outSampleRate;
+      const newLen = Math.round(buffer.length / ratio);
+      const result = new Float32Array(newLen);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+
+      while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+        let accum = 0;
+        let count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+          accum += buffer[i];
+          count++;
+        }
+        result[offsetResult] = count > 0 ? accum / count : buffer[offsetBuffer];
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return result;
+    }
+
+    _flushBuffer() {
+      if (this.sampleBufferIndex === 0) return;
+      const chunk = this.sampleBuffer.subarray(0, this.sampleBufferIndex);
+      this.sampleBufferIndex = 0;
+
+      const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      let binary = "";
+      const chunkSize = 4096;
+      for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+        const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.byteLength));
+        binary += String.fromCharCode.apply(null, slice);
+      }
+      const b64 = btoa(binary);
+      if (this.onChunk) this.onChunk(b64);
     }
 
     async start() {
       if (this.isRecording) return true;
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioCtx({ sampleRate: 16000 });
+        this.audioCtx = new AudioCtx();
         if (this.audioCtx.state === "suspended") {
           await this.audioCtx.resume();
         }
 
         this.mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            sampleRate: 16000,
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
@@ -1023,14 +1124,15 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         });
 
-        const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-        // ScriptProcessorNode 1024 muestras (~64ms latencia ultra-baja)
-        this.processor = this.audioCtx.createScriptProcessor(1024, 1, 1);
+        this.sourceNode = this.audioCtx.createMediaStreamSource(this.mediaStream);
+        // Buffer de 2048 muestras (~42ms a 48kHz)
+        this.processor = this.audioCtx.createScriptProcessor(2048, 1, 1);
 
         this.processor.onaudioprocess = (e) => {
           if (!this.isRecording) return;
           const inputData = e.inputBuffer.getChannelData(0);
 
+          // 1. RMS para modulación visual
           let sum = 0;
           for (let i = 0; i < inputData.length; i++) {
             sum += inputData[i] * inputData[i];
@@ -1038,54 +1140,68 @@ document.addEventListener("DOMContentLoaded", () => {
           const rms = Math.sqrt(sum / inputData.length);
           if (this.onRms) this.onRms(rms);
 
-          // Conversión Float32 a Int16 Little Endian
-          const pcm16 = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            let s = Math.max(-1, Math.min(1, inputData[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          // 2. Downsampling estricto a 16kHz
+          const resampled = this._downsampleBuffer(inputData, this.audioCtx.sampleRate, this.targetSampleRate);
+
+          // 3. Conversión Float32 a Int16 y acumulación en sampleBuffer
+          for (let i = 0; i < resampled.length; i++) {
+            const s = Math.max(-1, Math.min(1, resampled[i]));
+            this.sampleBuffer[this.sampleBufferIndex++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+
+            if (this.sampleBufferIndex >= this.TARGET_SAMPLES) {
+              if (this.flushTimer) clearTimeout(this.flushTimer);
+              this._flushBuffer();
+            }
           }
 
-          let binary = "";
-          const bytes = new Uint8Array(pcm16.buffer);
-          const len = bytes.byteLength;
-          for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          const b64 = btoa(binary);
-
-          if (this.onChunk) {
-            this.onChunk(b64);
+          // Flush de seguridad para últimos fonemas
+          if (this.sampleBufferIndex > 0) {
+            if (this.flushTimer) clearTimeout(this.flushTimer);
+            this.flushTimer = setTimeout(() => this._flushBuffer(), 120);
           }
         };
 
-        source.connect(this.processor);
-        this.processor.connect(this.audioCtx.destination);
+        // Blindaje de audio: GainNode en 0 para evitar feedback del micrófono a los altavoces
+        this.silentGain = this.audioCtx.createGain();
+        this.silentGain.gain.value = 0.0;
+
+        this.sourceNode.connect(this.processor);
+        this.processor.connect(this.silentGain);
+        this.silentGain.connect(this.audioCtx.destination);
+
         this.isRecording = true;
         return true;
       } catch (err) {
-        console.error("Error al iniciar micrófono:", err);
+        console.error("[LiveAudioRecorder] Error al activar micrófono:", err);
+        this.stop();
         return false;
       }
     }
 
     stop() {
       this.isRecording = false;
+      if (this.flushTimer) clearTimeout(this.flushTimer);
+      this._flushBuffer();
+      if (this.sourceNode) {
+        try { this.sourceNode.disconnect(); } catch (e) {}
+        this.sourceNode = null;
+      }
       if (this.processor) {
-        try {
-          this.processor.disconnect();
-        } catch (e) {}
+        try { this.processor.disconnect(); } catch (e) {}
         this.processor = null;
+      }
+      if (this.silentGain) {
+        try { this.silentGain.disconnect(); } catch (e) {}
+        this.silentGain = null;
       }
       if (this.mediaStream) {
         try {
-          this.mediaStream.getTracks().forEach((t) => t.stop());
+          this.mediaStream.getTracks().forEach((track) => track.stop());
         } catch (e) {}
         this.mediaStream = null;
       }
       if (this.audioCtx) {
-        try {
-          this.audioCtx.close();
-        } catch (e) {}
+        try { this.audioCtx.close(); } catch (e) {}
         this.audioCtx = null;
       }
     }
@@ -1098,7 +1214,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const liveAudioRecorder = new LiveAudioRecorder(
     (b64Chunk) => {
-      // Enviar frame de audio PCM 16kHz al WebSocket
+      // Enviar frame de audio PCM 16kHz regulado (100ms) al WebSocket
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "audio_in",
@@ -1107,7 +1223,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     },
     (rms) => {
-      // Si el usuario está hablando (RMS alto), modular el Arc Reactor
+      // Si el usuario está hablando (RMS alto), modular el Arc Reactor en Cian
       if (rms > 0.03 && !window._isLiveAudioPlaying) {
         window._isLocalAudioActive = true;
         currentAudioRms = Math.min(0.95, rms * 4.5);
@@ -1135,9 +1251,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       appendLog("VOZ", "Sesión de voz en vivo pausada.", "log-info");
     } else {
-      // Iniciar sesión
-      // Asegurar que el AudioContext de reproducción esté desbloqueado por la interacción del usuario
-      window.liveAudioPlayer.init();
+      // Iniciar sesión y desbloquear audio
+      await window.liveAudioPlayer.unlock();
 
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "start_live_session" }));

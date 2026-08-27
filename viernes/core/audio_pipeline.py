@@ -153,16 +153,18 @@ class UniversalAudioPipeline:
                         self._loop
                     )
 
-                # Encolar para transmisión directa a Gemini Live
-                if self.is_recording and self._loop:
-                    try:
-                        self.audio_queue_in.put_nowait(pcm_data)
-                    except asyncio.QueueFull:
+                # Encolar para transmisión directa a Gemini Live de forma thread-safe
+                if self.is_recording and self._loop and self._loop.is_running():
+                    def _safe_put():
                         try:
-                            self.audio_queue_in.get_nowait()
-                        except Exception:
-                            pass
-                        self.audio_queue_in.put_nowait(pcm_data)
+                            self.audio_queue_in.put_nowait(pcm_data)
+                        except asyncio.QueueFull:
+                            try:
+                                self.audio_queue_in.get_nowait()
+                            except Exception:
+                                pass
+                            self.audio_queue_in.put_nowait(pcm_data)
+                    self._loop.call_soon_threadsafe(_safe_put)
 
             # Iniciar InputStream solo si hay un dispositivo físico de entrada válido
             if self.input_device_id is not None:
