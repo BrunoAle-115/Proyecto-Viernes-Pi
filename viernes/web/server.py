@@ -54,12 +54,14 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # --- MIDDLEWARE DE CABECERAS DE SEGURIDAD (Anti-XSS, Clickjacking, MIME Sniffing) ---
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host if request.client else "127.0.0.1"
-        if not rate_limiter.is_allowed(client_ip):
-            return JSONResponse(
-                status_code=429,
-                content={"error": "Too Many Requests. Rate limit exceeded por seguridad."}
-            )
+        path = request.url.path
+        if not path.startswith("/static") and path != "/favicon.ico":
+            client_ip = request.client.host if request.client else "127.0.0.1"
+            if not rate_limiter.is_allowed(client_ip):
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "Too Many Requests. Rate limit exceeded por seguridad."}
+                )
 
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -320,13 +322,24 @@ async def trigger_android_tv(req: CastRequest, user: dict = Depends(get_current_
 
 @app.get("/api/emails")
 async def get_emails(user: dict = Depends(get_current_user)):
-    gmail = await gmail_client.get_unread_emails(max_results=5, only_important=True)
-    zoho = zoho_client.get_unread_emails(max_results=5, only_important=True)
+    gmail = []
+    zoho = []
+    try:
+        gmail = await asyncio.wait_for(gmail_client.get_unread_emails(max_results=5, only_important=True), timeout=2.0)
+    except Exception:
+        pass
+    try:
+        zoho = await asyncio.wait_for(asyncio.to_thread(zoho_client.get_unread_emails, max_results=5, only_important=True), timeout=2.0)
+    except Exception:
+        pass
     return {"gmail": gmail, "zoho": zoho, "total": len(gmail) + len(zoho)}
 
 @app.get("/api/github")
 async def get_github_prs(user: dict = Depends(get_current_user)):
-    return await github_monitor.get_pull_requests_summary()
+    try:
+        return await asyncio.wait_for(github_monitor.get_pull_requests_summary(), timeout=2.5)
+    except Exception:
+        return {"total_prs": 0, "prs": [], "pending_review_count": 0, "ready_for_merge_count": 0}
 
 @app.get("/api/telephony")
 async def get_telephony_status(user: dict = Depends(get_current_user)):

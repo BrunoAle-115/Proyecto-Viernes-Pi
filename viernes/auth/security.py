@@ -107,8 +107,8 @@ class InMemoryRateLimiter:
         return True
 
 
-rate_limiter = InMemoryRateLimiter(max_requests=120, window_seconds=60)
-auth_rate_limiter = InMemoryRateLimiter(max_requests=10, window_seconds=60) # 10 intentos de login por minuto
+rate_limiter = InMemoryRateLimiter(max_requests=600, window_seconds=60)
+auth_rate_limiter = InMemoryRateLimiter(max_requests=30, window_seconds=60) # 30 intentos por minuto
 
 
 # --- SANITIZACIÓN DE ENTRADAS (Anti-XSS / Injection) ---

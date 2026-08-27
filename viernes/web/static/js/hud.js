@@ -67,7 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let currentAudioRms = 0.05;
   let isSpeaking = false;
-  let authToken = "";
+  let authToken = localStorage.getItem("viernes_auth_token") || "";
 
   // --- STARK AUDIO PROCEDURAL SFX SYNTHESIZER (Web Audio API) ---
   const StarkAudio = {
@@ -237,6 +237,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const email = loginEmail.value.trim();
     const password = loginPassword.value;
 
+    if (!email || !password) {
+      authErrorMsg.textContent = "Por favor ingresa correo y contraseña.";
+      return;
+    }
+
+    btnLoginSubmit.disabled = true;
+    btnLoginSubmit.textContent = "AUTENTICANDO...";
+
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
@@ -244,17 +252,21 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ email, password })
       });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.success) {
         authToken = data.token;
+        localStorage.setItem("viernes_auth_token", authToken);
         authOverlay.style.display = "none";
         appendLog("AUTH", `Bienvenido señor Bruno (${escapeHtml(email)}). Acceso táctico concedido.`, "log-success");
         loadAllData();
         connectWs();
       } else {
-        authErrorMsg.textContent = data.detail || "Contraseña o correo incorrectos.";
+        authErrorMsg.textContent = data.detail || "Contraseña o correo no autorizados.";
       }
     } catch (err) {
       authErrorMsg.textContent = "Error conectando con el servidor de autenticación.";
+    } finally {
+      btnLoginSubmit.disabled = false;
+      btnLoginSubmit.textContent = "AUTORIZAR ACCESO";
     }
   });
 
@@ -265,6 +277,7 @@ document.addEventListener("DOMContentLoaded", () => {
   btnLogout.addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     authToken = "";
+    localStorage.removeItem("viernes_auth_token");
     authOverlay.style.display = "flex";
     if (ws) ws.close();
   });
@@ -549,12 +562,14 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function loadAllData() {
-    loadWeather();
-    loadNews();
-    loadMemory();
-    loadDevices();
-    loadEmails();
-    loadGithub();
+    Promise.allSettled([
+      loadWeather(),
+      loadNews(),
+      loadMemory(),
+      loadDevices(),
+      loadEmails(),
+      loadGithub()
+    ]);
   }
 
   // 10. Authenticated WebSocket Telemetry Stream (Anti-Hijacking)
