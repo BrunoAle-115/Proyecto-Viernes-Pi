@@ -8,7 +8,7 @@ import json
 import urllib.request
 import logging
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 
 logger = logging.getLogger("viernes.services.weather")
@@ -52,6 +52,10 @@ WMO_WEATHER_CODES = {
 }
 
 
+import time
+
+_weather_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
 class WeatherEngine:
     @staticmethod
     def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
@@ -63,15 +67,21 @@ class WeatherEngine:
             f"timezone=America%2FSantiago&forecast_days=2"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "VIERNES-Assistant/2.0"})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             return json.loads(response.read().decode())
 
     @classmethod
     async def get_forecast(cls, city: str = "santiago") -> Dict[str, Any]:
-        """Obtiene el pronóstico actual y por hora para una ciudad de Chile."""
+        """Obtiene el pronóstico actual y por hora para una ciudad de Chile con caché en memoria de 5 min."""
         city_key = city.lower().strip().replace(" ", "_")
         loc = CHILE_LOCATIONS.get(city_key, CHILE_LOCATIONS["santiago"])
-        
+
+        now_mono = time.monotonic()
+        if city_key in _weather_cache:
+            cached_time, cached_data = _weather_cache[city_key]
+            if now_mono - cached_time < 300.0:  # 5 minutos TTL
+                return cached_data
+
         loop = asyncio.get_running_loop()
         try:
             raw_data = await loop.run_in_executor(None, cls._fetch_open_meteo, loc["lat"], loc["lon"])
@@ -118,7 +128,7 @@ class WeatherEngine:
                     "rain_mm": amount,
                 })
 
-            return {
+            res = {
                 "city": loc["name"],
                 "current_temp": current.get("temperature_2m", 20.0),
                 "apparent_temp": current.get("apparent_temperature", 20.0),
@@ -131,6 +141,8 @@ class WeatherEngine:
                 "hourly": hourly_forecast,
                 "timestamp": datetime.now().isoformat()
             }
+            _weather_cache[city_key] = (now_mono, res)
+            return res
         except Exception as e:
             logger.error(f"Error consultando Open-Meteo: {e}")
             return {

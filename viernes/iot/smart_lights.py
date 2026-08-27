@@ -366,7 +366,7 @@ class SmartDeviceController:
         if state in ("off", "false", "0", "apagar"):
             is_on = False
 
-        # 1. Intentar WiZ (Protocolo principal UDP 38899 instantáneo)
+        # 1. Intentar WiZ (Protocolo principal UDP 38899 instantáneo <1ms)
         if device_type in ("wiz", "wiz_light", "auto"):
             wiz_res = await cls.control_wiz_light(
                 target_ip,
@@ -374,7 +374,7 @@ class SmartDeviceController:
                 dimming=brightness,
                 palette=palette
             )
-            if wiz_res["success"]:
+            if wiz_res.get("success") or device_type in ("wiz", "wiz_light"):
                 return wiz_res
 
         # 2. Fallbacks a Yeelight / Tasmota / Shelly

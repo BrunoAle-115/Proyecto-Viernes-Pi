@@ -408,7 +408,10 @@ class GeminiLiveClient:
             args = fc.get("args", {})
             logger.info(f"⚡ [Gemini Tool Call] Invocando: {name} (ID: {call_id}) con args: {args}")
             try:
-                result = await ToolsDispatcher.execute_tool(name, args)
+                result = await asyncio.wait_for(ToolsDispatcher.execute_tool(name, args), timeout=2.5)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout en herramienta {name} tras 2.5s.")
+                result = {"status": "timeout", "message": f"Herramienta {name} excedió tiempo límite."}
             except Exception as ex:
                 logger.error(f"Error ejecutando herramienta {name}: {ex}")
                 result = {"status": "error", "message": str(ex)}

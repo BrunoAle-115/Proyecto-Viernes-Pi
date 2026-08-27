@@ -175,21 +175,43 @@ class DeviceManager:
         return list(self.devices.values())
 
     def get_device_by_name(self, query: str) -> Optional[Dict[str, Any]]:
-        """Busca un dispositivo por coincidencia de texto en su alias, id o tipo."""
+        """Busca un dispositivo por coincidencia de texto en su alias, id o tipo, priorizando dispositivos online en la subred activa."""
+        if not query:
+            return None
         q = query.lower().strip()
-        if q in self.devices:
-            return self.devices[q]
 
+        # 1. Búsqueda directa por ID si no está marcado como obsoleto
+        if q in self.devices:
+            dev = self.devices[q]
+            if dev.get("status") != "stale_other_subnet":
+                return dev
+
+        # 2. Enrutamiento prioritario para dispositivos tácticos clave de Bruno
+        if ("wiz" in q or "luz" in q or "luces" in q or "lampara" in q or "foco" in q):
+            wiz = self.devices.get("luz_wiz")
+            if wiz and wiz.get("status") != "stale_other_subnet":
+                return wiz
+
+        if ("aire" in q or "ac" in q or "clima" in q or "airsys" in q or "frio" in q or "calor" in q):
+            ac = self.devices.get("aire_ac")
+            if ac and ac.get("status") != "stale_other_subnet":
+                return ac
+
+        if ("pc" in q or "computador" in q or "tarro" in q or "gamer" in q or "desktop" in q):
+            pc = self.devices.get("pc_principal")
+            if pc and pc.get("status") != "stale_other_subnet":
+                return pc
+
+        # 3. Búsqueda por coincidencia de alias / IP / MAC en dispositivos activos
         for dev in self.devices.values():
+            if dev.get("status") == "stale_other_subnet":
+                continue
             alias = dev.get("alias", "").lower()
-            if q in alias or alias in q or q == dev.get("id", "").lower():
+            dev_id = dev.get("id", "").lower()
+            dev_ip = dev.get("ip", "")
+            if q == dev_ip or q == dev_id or q in alias or alias in q:
                 return dev
-            if ("pc" in q or "computador" in q or "tarro" in q) and dev.get("type") == "desktop":
-                return dev
-            if ("wiz" in q or "luz" in q or "luces" in q or "lampara" in q) and dev.get("type") in ("wiz_light", "light"):
-                return dev
-            if ("aire" in q or "ac" in q or "clima" in q or "airsys" in q) and dev.get("type") == "air_conditioner":
-                return dev
+
         return None
 
     async def execute_turn_on(self, target_name_or_ip: str) -> Dict[str, Any]:
