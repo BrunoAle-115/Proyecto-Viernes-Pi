@@ -202,3 +202,40 @@ def test_dynamic_subnet_detection():
     assert "/24" in subnet
     assert subnet.count(".") == 3
 
+
+def test_google_cast_and_audio_fallback():
+    from viernes.iot.android_tv_cast import GoogleCastController, THE_WEEKND_TRACKS
+
+    async def _test():
+        cast = GoogleCastController()
+        # Probar reproductor The Weeknd con fallback
+        res = await cast.play_the_weeknd("blinding_lights", target_tv_ip="192.168.100.25", target_home_ip="192.168.100.31")
+        assert res["success"] is True
+        assert "The Weeknd" in res["track"]
+        assert res["target"] in ("google_tv", "google_home_speaker")
+
+    asyncio.run(_test())
+
+
+def test_frutifantastico_macro_engine():
+    from viernes.iot.party_macro import PartyMacroEngine
+
+    async def _test():
+        engine = PartyMacroEngine()
+        # Activar Modo Frutifantástico
+        res = await engine.trigger_frutifantastico_mode(
+            light_ip="192.168.100.15", tv_ip="192.168.100.25", speaker_ip="192.168.100.31"
+        )
+        assert res["success"] is True
+        assert res["mode"] == "frutifantastico"
+        assert "Frutifantástico" in res["report"]
+        assert engine.is_party_active is True
+
+        # Desactivar Modo Frutifantástico
+        stop_res = await engine.stop_party_mode(light_ip="192.168.100.15")
+        assert stop_res["success"] is True
+        assert engine.is_party_active is False
+
+    asyncio.run(_test())
+
+

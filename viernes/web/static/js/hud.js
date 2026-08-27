@@ -665,8 +665,23 @@ document.addEventListener("DOMContentLoaded", () => {
       body: JSON.stringify({ target, power, temperature: temp, mode: mode, fan_speed: "auto" })
     });
     const data = await res.json();
-    appendLog("AIRSYS", data.message, "log-success");
+  window.triggerFrutifantastico = async () => {
+    appendLog("FIESTA", "🍓🎉 ¡ACTIVANDO MODO FRUTIFANTÁSTICO! (WiZ Fiesta + The Weeknd en Google TV/Home)...", "log-warn");
+    const res = await secureFetch("/api/macro/frutifantastico", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track: "blinding_lights" })
+    });
+    const data = await res.json();
+    appendLog("VIERNES", data.report || "Modo Frutifantástico activo.", "log-success");
   };
+
+  const btnFrutifantastico = document.getElementById("btn-frutifantastico");
+  if (btnFrutifantastico) {
+    btnFrutifantastico.addEventListener("click", () => {
+      window.triggerFrutifantastico();
+    });
+  }
 
   btnPromptSend.addEventListener("click", async () => {
     const text = promptInput.value.trim();

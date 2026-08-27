@@ -107,6 +107,41 @@ GEMINI_TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "trigger_frutifantastico_mode",
+        "description": "Activa el MODO FRUTIFANTÁSTICO: las luces WiZ se ponen en modo fiesta con colores intensos y 100% de brillo, reproduce el video musical de The Weeknd ('Blinding Lights') en Android TV / Google TV (con fallback a Google Home si la TV no está disponible) y acondiciona el aire a 20°C.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "track": {
+                    "type": "STRING",
+                    "description": "Canción de The Weeknd: 'blinding_lights', 'starboy' o 'save_your_tears'."
+                }
+            }
+        }
+    },
+    {
+        "name": "control_android_tv",
+        "description": "Controla Android TV / Google TV y Google Home: lanzar video de YouTube, reproducir, pausar, subir/bajar volumen.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "command": {
+                    "type": "STRING",
+                    "description": "Comando: 'play_youtube', 'play', 'pause', 'volume_up', 'volume_down', 'mute'."
+                },
+                "youtube_id": {
+                    "type": "STRING",
+                    "description": "ID del video de YouTube a reproducir si el comando es play_youtube."
+                },
+                "target_ip": {
+                    "type": "STRING",
+                    "description": "IP de la TV o altavoz (por defecto 192.168.100.25)."
+                }
+            },
+            "required": ["command"]
+        }
+    },
+    {
         "name": "get_chile_news",
         "description": "Obtiene las noticias y titulares más importantes de Chile en tiempo real desde Canal 13 (T13), BioBioChile y Cooperativa.",
         "parameters": {
@@ -292,6 +327,27 @@ class ToolsDispatcher:
                 return await device_mgr.execute_control_ac(
                     target_name_or_ip=target, power=power, target_temp=temp, mode=mode, fan_speed=fan
                 )
+
+            elif name == "trigger_frutifantastico_mode":
+                from viernes.iot.party_macro import party_engine
+                track = args.get("track", "blinding_lights")
+                res = await party_engine.trigger_frutifantastico_mode(track_key=track)
+                return {
+                    "success": True,
+                    "voice_response": res.get("report"),
+                    "details": res
+                }
+
+            elif name == "control_android_tv":
+                from viernes.iot.android_tv_cast import cast_controller
+                cmd = args.get("command", "play")
+                yt_id = args.get("youtube_id", "")
+                target_ip = args.get("target_ip", "192.168.100.25")
+                if cmd == "play_youtube" and yt_id:
+                    ok = await cast_controller.launch_youtube_video(target_ip, yt_id)
+                    return {"success": ok, "message": f"Video de YouTube ({yt_id}) lanzado en Android TV."}
+                else:
+                    return await cast_controller.send_media_command(target_ip, command=cmd)
 
             elif name == "get_chile_news":
                 limit = args.get("limit", 4)

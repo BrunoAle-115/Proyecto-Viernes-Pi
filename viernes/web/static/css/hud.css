@@ -502,6 +502,38 @@ body.hud-body {
   box-shadow: 0 0 20px var(--cyan-stark);
 }
 
+.btn-frutifantastico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #ff0077, #7928ca, #00f0ff);
+  background-size: 200% 200%;
+  animation: partyGradient 3s ease infinite;
+  border: 1px solid #ff0077;
+  color: #fff;
+  font-family: var(--font-hud);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 0 0 15px rgba(255, 0, 119, 0.5);
+  transition: all 0.2s ease;
+}
+
+.btn-frutifantastico:hover {
+  filter: brightness(1.2);
+  box-shadow: 0 0 25px #ff0077;
+  transform: scale(1.02);
+}
+
+@keyframes partyGradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 .btn-subtle {
   display: flex;
   align-items: center;

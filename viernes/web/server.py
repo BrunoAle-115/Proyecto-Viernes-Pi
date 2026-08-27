@@ -150,6 +150,18 @@ class AcRequest(BaseModel):
     mode: str = Field(default="cool", max_length=20)
     fan_speed: str = Field(default="auto", max_length=20)
 
+class FrutifantasticoRequest(BaseModel):
+    track: str = Field(default="blinding_lights", max_length=50)
+    light_ip: str = Field(default="192.168.100.15", max_length=40)
+    tv_ip: str = Field(default="192.168.100.25", max_length=40)
+    speaker_ip: str = Field(default="192.168.100.31", max_length=40)
+    ac_ip: str = Field(default="192.168.100.20", max_length=40)
+
+class CastRequest(BaseModel):
+    target_ip: str = Field(default="192.168.100.25", max_length=40)
+    command: str = Field(default="play_youtube", max_length=30)
+    youtube_id: Optional[str] = Field(default="4NRXx6U8ABQ", max_length=50)
+
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=1000)
 
@@ -280,6 +292,31 @@ async def trigger_ac(req: AcRequest, user: dict = Depends(get_current_user)):
         mode=req.mode,
         fan_speed=req.fan_speed
     )
+
+@app.post("/api/macro/frutifantastico")
+async def trigger_frutifantastico(req: FrutifantasticoRequest, user: dict = Depends(get_current_user)):
+    from viernes.iot.party_macro import party_engine
+    return await party_engine.trigger_frutifantastico_mode(
+        light_ip=req.light_ip,
+        tv_ip=req.tv_ip,
+        speaker_ip=req.speaker_ip,
+        ac_ip=req.ac_ip,
+        track_key=req.track
+    )
+
+@app.post("/api/macro/frutifantastico/stop")
+async def stop_frutifantastico(user: dict = Depends(get_current_user)):
+    from viernes.iot.party_macro import party_engine
+    return await party_engine.stop_party_mode()
+
+@app.post("/api/android_tv")
+async def trigger_android_tv(req: CastRequest, user: dict = Depends(get_current_user)):
+    from viernes.iot.android_tv_cast import cast_controller
+    if req.command == "play_youtube" and req.youtube_id:
+        ok = await cast_controller.launch_youtube_video(req.target_ip, req.youtube_id)
+        return {"success": ok, "message": f"Video ({req.youtube_id}) transmitido a Android TV / Cast."}
+    else:
+        return await cast_controller.send_media_command(req.target_ip, req.command)
 
 @app.get("/api/emails")
 async def get_emails(user: dict = Depends(get_current_user)):
