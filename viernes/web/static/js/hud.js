@@ -226,22 +226,32 @@ document.addEventListener("DOMContentLoaded", () => {
     return res;
   }
 
+  const sessionUserBadge = document.getElementById("session-user-badge");
+
   // 3. Authentication Check
   async function checkAuth() {
     try {
       const res = await secureFetch("/api/auth/me");
       if (res.ok) {
+        const authData = await res.json();
+        const email = (authData.user && authData.user.email) ? authData.user.email : "BRUNO";
+        if (sessionUserBadge) {
+          sessionUserBadge.textContent = `👤 ${escapeHtml(email.split('@')[0].toUpperCase())}`;
+          sessionUserBadge.style.display = "inline-block";
+        }
         if (authOverlay) authOverlay.style.display = "none";
         loadAllData();
         connectWs();
       } else {
         authToken = "";
         localStorage.removeItem("viernes_auth_token");
+        if (sessionUserBadge) sessionUserBadge.style.display = "none";
         if (authOverlay) authOverlay.style.display = "flex";
       }
     } catch (e) {
       authToken = "";
       localStorage.removeItem("viernes_auth_token");
+      if (sessionUserBadge) sessionUserBadge.style.display = "none";
       if (authOverlay) authOverlay.style.display = "flex";
     }
   }
@@ -279,6 +289,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (res.ok && data.success) {
         authToken = data.token;
         localStorage.setItem("viernes_auth_token", authToken);
+        if (sessionUserBadge) {
+          sessionUserBadge.textContent = `👤 ${escapeHtml(email.split('@')[0].toUpperCase())}`;
+          sessionUserBadge.style.display = "inline-block";
+        }
         if (overlay) overlay.style.display = "none";
         appendLog("AUTH", `Bienvenido señor Bruno (${escapeHtml(email)}). Acceso táctico concedido.`, "log-success");
         loadAllData();
@@ -302,6 +316,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {}
     authToken = "";
     localStorage.removeItem("viernes_auth_token");
+    if (sessionUserBadge) sessionUserBadge.style.display = "none";
     if (authOverlay) authOverlay.style.display = "flex";
     if (ws) ws.close();
   });

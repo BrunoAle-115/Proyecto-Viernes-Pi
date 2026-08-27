@@ -82,18 +82,11 @@ body.hud-body {
   background: rgba(4, 8, 18, 0.96);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  z-index: 99999 !important;
-  display: flex !important;
+  z-index: 99999;
+  display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: auto;
-}
-
-.auth-modal-overlay[style*="display: none"],
-.auth-modal-overlay[style*="display:none"],
-.auth-modal-overlay.hidden {
-  display: none !important;
-  pointer-events: none !important;
 }
 
 .auth-card {
