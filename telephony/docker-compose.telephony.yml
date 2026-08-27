@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # 1. ASTERISK 20 LTS - MOTOR DE TELEFONÍA SIP & ARI
+  # ============================================================================
+  asterisk:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.asterisk
+    container_name: viernes-asterisk
+    restart: unless-stopped
+    network_mode: "host" # Recomendado para Asterisk para evitar NAT RTP complejo
+    env_file:
+      - .env.telephony
+    volumes:
+      - ./config/asterisk:/config_override:ro
+      - asterisk_sounds:/var/lib/asterisk/sounds
+      - asterisk_logs:/var/log/asterisk
+    healthcheck:
+      test: ["CMD-SHELL", "asterisk -rx 'core ping' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ============================================================================
+  # 2. V.I.E.R.N.E.S. TELEPHONY BRIDGE & AI VOICE CONNECTOR
+  # ============================================================================
+  telephony_bridge:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        WORKDIR /app
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        COPY src/ ./src/
+        ENV PYTHONPATH=/app
+        CMD ["python", "-m", "src.telephony_service"]
+    container_name: viernes-telephony-bridge
+    restart: unless-stopped
+    network_mode: "host"
+    env_file:
+      - .env.telephony
+    depends_on:
+      asterisk:
+        condition: service_healthy
+
+volumes:
+  asterisk_sounds:
+  asterisk_logs:

@@ -1,0 +1,82 @@
+# ==============================================================================
+# V.I.E.R.N.E.S. - Asterisk 20 LTS Dockerfile con Soporte AudioSocket y Codecs
+# ==============================================================================
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ASTERISK_VERSION=20-current
+
+# Instalar dependencias del sistema y compilación
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    autoconf \
+    automake \
+    build-essential \
+    bzip2 \
+    ca-certificates \
+    curl \
+    git \
+    libedit-dev \
+    libjansson-dev \
+    libopus-dev \
+    libsrtp2-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    locales \
+    net-tools \
+    procps \
+    subversion \
+    tar \
+    uuid \
+    uuid-dev \
+    uuid-runtime \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configurar locale es_CL.UTF-8
+RUN sed -i -e 's/# es_CL.UTF-8 UTF-8/es_CL.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen
+ENV LANG=es_CL.UTF-8
+ENV LANGUAGE=es_CL:es
+ENV LC_ALL=es_CL.UTF-8
+
+# Descargar y compilar Asterisk 20 LTS
+WORKDIR /usr/src
+RUN wget https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-20-current.tar.gz && \
+    tar -zxvf asterisk-20-current.tar.gz && \
+    cd asterisk-20.* && \
+    ./contrib/scripts/get_mp3_source.sh || true && \
+    ./configure --with-jansson --with-ssl --with-srtp --with-opus --with-pjproject-bundled && \
+    make menuselect.makeopts && \
+    menuselect/menuselect \
+        --enable res_pjsip \
+        --enable res_pjsip_session \
+        --enable res_ari \
+        --enable res_http_websocket \
+        --enable res_audiosocket \
+        --enable app_audiosocket \
+        --enable app_stasis \
+        --enable codec_opus \
+        --enable codec_alaw \
+        --enable codec_ulaw \
+        --enable format_wav \
+        --enable format_pcm \
+        --enable format_sln \
+        menuselect.makeopts && \
+    make -j$(nproc) && \
+    make install && \
+    make samples && \
+    make config && \
+    ldconfig && \
+    cd .. && rm -rf asterisk-20*
+
+# Crear directorios para certificados y audios
+RUN mkdir -p /etc/asterisk/keys /var/spool/asterisk/outgoing /var/log/asterisk
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 5060/udp 5060/tcp 5061/tcp 5038/tcp 8088/tcp 9099/tcp 10000-20000/udp
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["asterisk", "-f", "-vvvddd"]

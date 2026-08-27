@@ -1,0 +1,72 @@
+# ==============================================================================
+# V.I.E.R.N.E.S. - Configuración General del Sistema
+# ==============================================================================
+
+system:
+  name: "V.I.E.R.N.E.S."
+  language: "es-CL"
+  voice_name: "Aoede" # Voz natural femenina estilo F.R.I.D.A.Y
+  log_level: "INFO"
+  hardware: "raspberry_pi_5"
+
+audio:
+  input_device: null # null para default (o index numérico según sounddevice)
+  output_device: null
+  sample_rate_in: 16000
+  sample_rate_out: 24000
+  channels: 1
+  wake_word:
+    enabled: true
+    engine: "openwakeword" # "openwakeword", "porcupine" o "energy_vad"
+    phrase: "viernes"
+    sensitivity: 0.65
+
+network:
+  subnet: "192.168.1.0/24"
+  scan_interval_seconds: 300 # Escaneo automático cada 5 minutos
+  auto_wol_mac_cache: true
+  known_devices:
+    - name: "PC Gamer Principal"
+      ip: "192.168.1.150"
+      type: "desktop"
+      wol_enabled: true
+    - name: "Luces Escritorio"
+      ip: "192.168.1.120"
+      type: "light_yeelight"
+    - name: "Smart Plug Calefactor"
+      ip: "192.168.1.125"
+      type: "tuya_plug"
+
+smart_home:
+  yeelight:
+    auto_discover: true
+  tuya:
+    enabled: true
+  tasmota:
+    enabled: true
+
+telephony:
+  enabled: true
+  engine: "asterisk_ami" # o "sip_direct"
+  provider_preset: "zadarma_chile" # zadarma_chile, redvoiss, twilio_cl, net2phone
+  emergency_contacts:
+    - name: "Bruno Móvil"
+      number: "+569XXXXXXXX"
+      priority: 1
+
+scheduler:
+  morning_briefing_time: "08:00"
+  enable_daily_standup: true
+  database_path: "data/viernes.db"
+
+mail:
+  poll_interval_minutes: 5
+  triage_filter:
+    ignore_categories: ["PROMOTIONS", "SOCIAL", "NEWSLETTERS", "SPAM"]
+    urgency_threshold: "HIGH_AND_MEDIUM"
+
+github:
+  poll_interval_minutes: 3
+  notify_on_pr_approved: true
+  notify_on_pr_changes_requested: true
+  notify_on_ci_failed: true

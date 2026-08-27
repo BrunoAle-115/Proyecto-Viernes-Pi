@@ -1,0 +1,22 @@
+{
+  "pc_principal": {
+    "id": "pc_principal",
+    "alias": "Mi PC Gamer",
+    "ip": "192.168.1.150",
+    "mac": "00:11:22:33:44:55",
+    "type": "desktop",
+    "wol_enabled": true,
+    "status": "offline",
+    "last_seen": null
+  },
+  "luces_escritorio": {
+    "id": "luces_escritorio",
+    "alias": "Luces de Escritorio",
+    "ip": "192.168.1.120",
+    "mac": "",
+    "type": "light",
+    "wol_enabled": false,
+    "status": "online",
+    "last_seen": null
+  }
+}
