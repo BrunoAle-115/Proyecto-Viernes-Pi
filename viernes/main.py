@@ -86,7 +86,7 @@ def main():
 
     # Iniciar servidor Web HUD con Uvicorn
     host = os.getenv("WEB_HOST", "0.0.0.0")
-    port = int(os.getenv("WEB_PORT", 8080))
+    port = int(os.getenv("WEB_PORT", 9090))
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", loop="asyncio")
     server = uvicorn.Server(config)
 
