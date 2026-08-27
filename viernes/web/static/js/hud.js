@@ -901,6 +901,9 @@ document.addEventListener("DOMContentLoaded", () => {
       this.isPlaying = false;
       this.leadTime = 0.025; // 25ms jitter buffer óptimo para absorber jitter sin desfase
       this.maxDrift = 0.500; // 500ms umbral seguro para resincronización de drift temporal
+      this.lastAudioEndTime = 0;
+      this.hangoverDurationMs = 250; // 250ms de protección acústica anti-reverberación
+      this.playbackDebounceTimer = null;
     }
 
     initContext() {
@@ -924,6 +927,12 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    isAudioActivelyPlaying() {
+      if (this.activeSources.size > 0 || window._isLiveAudioPlaying) return true;
+      const now = performance.now();
+      return (now - this.lastAudioEndTime) < this.hangoverDurationMs;
+    }
+
     playChunk(base64Data) {
       if (!base64Data) return;
 
@@ -931,6 +940,11 @@ document.addEventListener("DOMContentLoaded", () => {
         this.initContext();
         const ctx = this.audioCtx;
         const now = ctx.currentTime;
+
+        if (this.playbackDebounceTimer) {
+          clearTimeout(this.playbackDebounceTimer);
+          this.playbackDebounceTimer = null;
+        }
 
         // 1. Decodificación Base64
         const binaryStr = atob(base64Data);
@@ -1007,13 +1021,18 @@ document.addEventListener("DOMContentLoaded", () => {
           try { source.disconnect(); } catch (e) {}
           this.activeSources.delete(source);
           if (this.activeSources.size === 0) {
-            window._isLiveAudioPlaying = false;
-            isSpeaking = false;
-            currentAudioRms = 0.02;
-            if (voiceStateTag && window._isLiveSessionActive) {
-              voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // HABLA LIBREMENTE";
-              voiceStateTag.style.color = "var(--cyan-stark)";
-            }
+            this.lastAudioEndTime = performance.now();
+            this.playbackDebounceTimer = setTimeout(() => {
+              if (this.activeSources.size === 0) {
+                window._isLiveAudioPlaying = false;
+                isSpeaking = false;
+                currentAudioRms = 0.02;
+                if (voiceStateTag && window._isLiveSessionActive) {
+                  voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // HABLA LIBREMENTE";
+                  voiceStateTag.style.color = "var(--cyan-stark)";
+                }
+              }
+            }, 80);
           }
         };
       } catch (err) {
@@ -1022,7 +1041,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     stopAll() {
+      if (this.playbackDebounceTimer) {
+        clearTimeout(this.playbackDebounceTimer);
+        this.playbackDebounceTimer = null;
+      }
       this.leftoverBytes = null;
+      this.lastAudioEndTime = performance.now();
       if (this.audioCtx) {
         const now = this.audioCtx.currentTime;
         if (this.gainNode) {
@@ -1070,7 +1094,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("pointerdown", unlockUserGesture, { once: true, passive: true });
   window.addEventListener("keydown", unlockUserGesture, { once: true, passive: true });
 
-  // 2. CAPTURADOR DE AUDIO STREAMING ULTRA-LIGERO (MICRÓFONO -> RESAMPLE 16kHz PCM BASE64)
+  // 2. CAPTURADOR DE AUDIO CON FILTRADO ACÚSTICO, NOISE GATE Y RESAMPLE CONTINUO
   class LiveAudioRecorder {
     constructor(onChunkCallback, onRmsCallback) {
       this.onChunk = onChunkCallback;
@@ -1089,6 +1113,9 @@ document.addEventListener("DOMContentLoaded", () => {
       this.bufferIndex = 0;
       this.resamplePos = 0;
       this.lastSample = 0;
+
+      this.BARGE_IN_RMS_THRESHOLD = 0.13; // Umbral de energía para interrumpir deliberadamente a la IA
+      this.bargeInConsecutiveFrames = 0;
     }
 
     static fastInt16ToBase64(int16Arr) {
@@ -1123,7 +1150,11 @@ document.addEventListener("DOMContentLoaded", () => {
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: false
+            autoGainControl: false,
+            googEchoCancellation: true,
+            googAutoGainControl: false,
+            googNoiseSuppression: true,
+            googHighpassFilter: true
           }
         });
 
@@ -1137,22 +1168,45 @@ document.addEventListener("DOMContentLoaded", () => {
           const channel = e.inputBuffer.getChannelData(0);
           const inLen = channel.length;
 
-          // RMS instantáneo
+          // 1. RMS instantáneo
           let sumSq = 0;
           for (let i = 0; i < inLen; i += 2) sumSq += channel[i] * channel[i];
           const rms = Math.sqrt(sumSq / (inLen / 2));
           if (this.onRms) this.onRms(rms);
 
-          // Resample lineal continuo + Conversión Int16
-          let pos = this.resamplePos;
-          while (pos < inLen) {
-            const idx = Math.floor(pos);
-            const frac = pos - idx;
-            const s1 = idx === 0 ? this.lastSample : channel[idx - 1];
-            const s2 = channel[idx];
-            let s = s1 + frac * (s2 - s1);
-            s = s < -1 ? -1 : (s > 1 ? 1 : s);
+          // 2. Supresión de Eco Acústico y Ducking
+          const isAiSpeaking = window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying();
+          if (isAiSpeaking) {
+            if (rms > this.BARGE_IN_RMS_THRESHOLD) {
+              this.bargeInConsecutiveFrames++;
+              if (this.bargeInConsecutiveFrames >= 2) {
+                window.liveAudioPlayer.stopAll();
+                this.bargeInConsecutiveFrames = 0;
+              }
+            } else {
+              this.bargeInConsecutiveFrames = 0;
+              return; // DESCARTAR FRAME: Evita que el audio de los parlantes reingrese al modelo
+            }
+          } else {
+            this.bargeInConsecutiveFrames = 0;
+          }
 
+          // 3. Resample lineal continuo con preservación estricta de límites de fase
+          let pos = this.resamplePos;
+          while (pos < inLen - 1) {
+            let s;
+            if (pos < 0) {
+              const frac = pos + 1;
+              s = this.lastSample + frac * (channel[0] - this.lastSample);
+            } else {
+              const idx = Math.floor(pos);
+              const frac = pos - idx;
+              const s1 = channel[idx];
+              const s2 = channel[idx + 1];
+              s = s1 + frac * (s2 - s1);
+            }
+
+            s = s < -1 ? -1 : (s > 1 ? 1 : s);
             this.buffer[this.bufferIndex++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
 
             if (this.bufferIndex >= this.chunkSamples) {
@@ -1187,10 +1241,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     stop() {
       this.isRecording = false;
+      this.bargeInConsecutiveFrames = 0;
       if (this.bufferIndex > 0) {
         const chunk = this.buffer.subarray(0, this.bufferIndex);
         this.bufferIndex = 0;
-        if (this.onChunk) {
+        if (this.onChunk && !(window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying())) {
           const b64 = LiveAudioRecorder.fastInt16ToBase64(chunk);
           this.onChunk(b64);
         }
@@ -1225,6 +1280,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const liveAudioRecorder = new LiveAudioRecorder(
     (b64Chunk) => {
+      // Guard de aislamiento: si la IA está reproduciendo, nunca re-enviar audio al socket
+      if (window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying()) {
+        return;
+      }
       // Enviar frame de audio PCM 16kHz regulado (100ms) al WebSocket
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1234,8 +1293,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     },
     (rms) => {
-      // Si el usuario está hablando (RMS alto), modular el Arc Reactor en Cian
-      if (rms > 0.03 && !window._isLiveAudioPlaying) {
+      const isAiPlaying = window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying();
+      if (rms > 0.03 && !isAiPlaying) {
         window._isLocalAudioActive = true;
         currentAudioRms = Math.min(0.95, rms * 4.5);
       } else {
@@ -1282,12 +1341,12 @@ document.addEventListener("DOMContentLoaded", () => {
           if (txt) txt.textContent = "🔴 CONVERSACIÓN EN VIVO (HABLANDO)";
         }
         if (voiceStateTag) {
-          voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // HABLA LIBREMENTE";
-          voiceStateTag.style.color = "var(--red-alert)";
+          voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // TE ESCUCHO...";
+          voiceStateTag.style.color = "var(--cyan-stark)";
         }
-        appendLog("VOZ", "🎙️ Transmisión de voz en vivo activada: Gemini Live te escucha en tiempo real.", "log-success");
+        appendLog("VOZ", "🎙️ Transmisión de voz en vivo activada: Habla naturalmente con V.I.E.R.N.E.S.", "log-success");
       } else {
-        appendLog("VOZ", "No se pudo acceder al micrófono. Verifica los permisos en la barra de URL.", "log-warn");
+        appendLog("VOZ", "No se pudo acceder al micrófono. Verifica los permisos del navegador.", "log-warn");
         StarkAudio.playAlert();
       }
     }

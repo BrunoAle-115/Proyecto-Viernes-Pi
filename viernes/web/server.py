@@ -122,14 +122,19 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.active_voice_ws: Optional[WebSocket] = None
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        if self.active_voice_ws is None:
+            self.active_voice_ws = websocket
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        if self.active_voice_ws == websocket:
+            self.active_voice_ws = self.active_connections[0] if self.active_connections else None
 
     async def broadcast(self, message: Dict[str, Any]):
         if not self.active_connections:
@@ -143,13 +148,31 @@ class ConnectionManager:
 
         await asyncio.gather(*[_safe_send(conn) for conn in list(self.active_connections)], return_exceptions=True)
 
+    async def broadcast_audio(self, message: Dict[str, Any]):
+        """Envía el stream de audio exclusivamente al socket de voz activo o a las conexiones sin duplicación."""
+        if not self.active_connections:
+            return
+
+        target_ws = self.active_voice_ws if self.active_voice_ws in self.active_connections else (self.active_connections[0] if self.active_connections else None)
+        if target_ws:
+            try:
+                await target_ws.send_json(message)
+            except Exception:
+                self.disconnect(target_ws)
+        else:
+            await self.broadcast(message)
+
 
 ws_manager = ConnectionManager()
 
 
 async def on_system_event(event: Event):
+    # Filtrar eventos internos de audio de altavoz local de hardware
+    if event.topic in ("audio/playback_chunk", "telemetry/internal"):
+        return
+
     if event.topic == "ai/audio_chunk":
-        await ws_manager.broadcast({
+        await ws_manager.broadcast_audio({
             "type": "audio_out",
             "data": event.data.get("data"),
             "mimeType": event.data.get("mimeType", "audio/pcm;rate=24000")
@@ -775,6 +798,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
 
                     elif m_type == "start_live_session":
                         logger.info("🎙️ Sesión de voz dúplex activada desde el HUD.")
+                        ws_manager.active_voice_ws = websocket
                         if not gemini_client.is_connected:
                             await gemini_client.connect()
                         await websocket.send_json({"type": "session_status", "status": "active"})
