@@ -711,15 +711,36 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   window.loadAllData = loadAllData;
 
-  // 10. Authenticated WebSocket Telemetry & Live Voice Stream
-  let ws;
+  // 10. Authenticated WebSocket Telemetry & Live Voice Stream (STRICT SINGLETON)
+  let ws = null;
+  let wsReconnectTimer = null;
+
   function connectWs() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    if (ws) {
+      try {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      } catch (e) {}
+      ws = null;
+    }
+
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const tokenQuery = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws${tokenQuery}`);
+    const activeWs = new WebSocket(`${protocol}//${window.location.host}/ws${tokenQuery}`);
+    ws = activeWs;
 
-    ws.onmessage = (event) => {
+    activeWs.onmessage = (event) => {
+      if (activeWs !== ws) return; // Descartar mensajes de sockets obsoletos
       try {
         const msg = JSON.parse(event.data);
 
@@ -794,8 +815,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     };
 
-    ws.onclose = () => {
-      if (authToken) setTimeout(connectWs, 3000);
+    activeWs.onclose = () => {
+      if (activeWs === ws) {
+        ws = null;
+        if (authToken) {
+          wsReconnectTimer = setTimeout(connectWs, 3000);
+        }
+      }
     };
   }
   window.connectWs = connectWs;
@@ -904,6 +930,7 @@ document.addEventListener("DOMContentLoaded", () => {
       this.lastAudioEndTime = 0;
       this.hangoverDurationMs = 250; // 250ms de protección acústica anti-reverberación
       this.playbackDebounceTimer = null;
+      this.recentSignatures = new Set();
     }
 
     initContext() {
@@ -935,6 +962,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     playChunk(base64Data) {
       if (!base64Data) return;
+
+      // 0. Deduplicación Estricta de Chunks
+      const sig = base64Data.slice(0, 48) + base64Data.slice(-24);
+      if (this.recentSignatures.has(sig)) {
+        return; // Frame ya programado o duplicado por red/conexión múltiple
+      }
+      this.recentSignatures.add(sig);
+      if (this.recentSignatures.size > 200) {
+        const first = this.recentSignatures.values().next().value;
+        this.recentSignatures.delete(first);
+      }
 
       try {
         this.initContext();
