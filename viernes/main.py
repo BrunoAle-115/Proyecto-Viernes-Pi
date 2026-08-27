@@ -72,6 +72,14 @@ async def start_assistant():
     await audio_pipeline.start()
     asyncio.create_task(gemini_client.connect())
 
+    # Manejador de Wake Word / Activación por voz continua (Ever-Listen)
+    async def on_wakeword_detected(event):
+        logger.info(f"🎙️ [Ever-Listen] Activación por voz recibida ({event.get('data')}). Canal de voz listo.")
+        if not gemini_client.is_connected:
+            asyncio.create_task(gemini_client.connect())
+
+    bus.subscribe("wakeword/detected", on_wakeword_detected)
+
     # 6. Publicar evento de sistema en línea
     await bus.publish("system/ready", {
         "status": "ONLINE",
