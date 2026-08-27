@@ -138,10 +138,19 @@ def main():
     try:
         loop.run_until_complete(server.serve())
     except (KeyboardInterrupt, SystemExit):
+        logger.info("Interrupción recibida. Iniciando cierre...")
+    finally:
         logger.info("Apagando V.I.E.R.N.E.S. de forma segura...")
-        loop.run_until_complete(audio_pipeline.stop())
-        loop.run_until_complete(gemini_client.close())
+        try:
+            loop.run_until_complete(audio_pipeline.stop())
+        except Exception:
+            pass
+        try:
+            loop.run_until_complete(gemini_client.close())
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     main()
+

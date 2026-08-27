@@ -570,11 +570,23 @@ async def add_memory_api(req: MemoryRequest, user: dict = Depends(get_current_us
 
 @app.get("/api/gemini/models")
 async def api_get_gemini_models(api_key: Optional[str] = None, user: dict = Depends(get_current_user)):
-    models = await models_manager.list_available_models(api_key=api_key)
+    # Si la clave viene enmascarada desde la UI (ej. 'AIzaSy...4xAb'), ignorarla para usar la real de .env
+    clean_key = None
+    if api_key and not api_key.startswith("AIzaSy...") and "..." not in api_key:
+        clean_key = api_key.strip()
+
+    models = await models_manager.list_available_models(api_key=clean_key)
+    live_models = [m for m in models if m.get("is_live_capable")]
+    standard_models = [m for m in models if not m.get("is_live_capable")]
+
     return {
         "success": True,
         "models": models,
-        "active_model": models_manager.active_model
+        "active_model": models_manager.active_model,
+        "count": len(models),
+        "live_count": len(live_models),
+        "live_models": live_models,
+        "standard_models": standard_models
     }
 
 @app.get("/api/settings")

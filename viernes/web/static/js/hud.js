@@ -42,7 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const hostIp = document.getElementById("host-ip");
   const voiceStateTag = document.getElementById("voice-state-tag");
   const canvas = document.getElementById("waveform-canvas");
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas ? canvas.getContext("2d") : null;
   const termLogs = document.getElementById("terminal-logs");
 
   const weatherTemp = document.getElementById("weather-temp");
@@ -78,6 +78,9 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!this.ctx) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (AudioCtx) this.ctx = new AudioCtx();
+      }
+      if (this.ctx && this.ctx.state === "suspended") {
+        this.ctx.resume().catch(() => {});
       }
     },
     playBlip(freq = 950, duration = 0.035) {
@@ -340,25 +343,44 @@ document.addEventListener("DOMContentLoaded", () => {
         cfgGeminiModel.innerHTML = "";
 
         if (models.length === 0) {
-          cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Predefinido)</option>';
+          cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash [⚡ LIVE AUDIO WS]</option>';
           return;
         }
+
+        const liveGroup = document.createElement("optgroup");
+        liveGroup.label = "⚡ MODELOS STREAMING / LIVE VOICE (WebSocket Multimodal)";
+
+        const reasoningGroup = document.createElement("optgroup");
+        reasoningGroup.label = "🧠 MODELOS DE RAZONAMIENTO Y CÓDIGO (Thinking / Pro)";
+
+        const standardGroup = document.createElement("optgroup");
+        standardGroup.label = "📝 MODELOS RÁPIDOS Y TEXTO (REST Multimodal)";
 
         models.forEach((m) => {
           const opt = document.createElement("option");
           opt.value = m.id;
-          const liveTag = m.is_live_capable ? " [⚡ LIVE STREAMING]" : "";
-          opt.textContent = `${m.displayName}${liveTag}`;
+          opt.textContent = m.displayName || m.id;
           if (m.id === previousSelection || m.is_active || (m.clean_id && previousSelection.endsWith(m.clean_id))) {
             opt.selected = true;
           }
-          cfgGeminiModel.appendChild(opt);
+
+          if (m.is_live_capable) {
+            liveGroup.appendChild(opt);
+          } else if (m.category === "reasoning" || m.category === "thinking" || m.category === "pro") {
+            reasoningGroup.appendChild(opt);
+          } else {
+            standardGroup.appendChild(opt);
+          }
         });
+
+        if (liveGroup.children.length > 0) cfgGeminiModel.appendChild(liveGroup);
+        if (reasoningGroup.children.length > 0) cfgGeminiModel.appendChild(reasoningGroup);
+        if (standardGroup.children.length > 0) cfgGeminiModel.appendChild(standardGroup);
       } else {
-        cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Predefinido)</option>';
+        cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash [⚡ LIVE AUDIO WS]</option>';
       }
     } catch (err) {
-      cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash (Fallback)</option>';
+      cfgGeminiModel.innerHTML = '<option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash [⚡ LIVE AUDIO WS] (Fallback)</option>';
     }
   }
 
@@ -408,12 +430,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnSaveSettings.addEventListener("click", async () => {
     const payload = {
-      gemini_api_key: cfgGeminiKey.value.trim(),
-      gemini_model: cfgGeminiModel.value,
-      github_token: cfgGithubToken.value.trim(),
-      github_repos: cfgGithubRepos.value.trim(),
-      sip_provider: cfgSipProvider.value,
-      default_city: cfgCity.value,
+      gemini_api_key: cfgGeminiKey ? cfgGeminiKey.value.trim() : "",
+      gemini_model: cfgGeminiModel ? cfgGeminiModel.value : "",
+      github_token: cfgGithubToken ? cfgGithubToken.value.trim() : "",
+      github_repos: cfgGithubRepos ? cfgGithubRepos.value.trim() : "",
+      sip_provider: cfgSipProvider ? cfgSipProvider.value : "zadarma_chile",
+      default_city: cfgCity ? cfgCity.value : "santiago",
       google_client_id: cfgGoogleClientId ? cfgGoogleClientId.value.trim() : "",
       google_client_secret: cfgGoogleClientSecret ? cfgGoogleClientSecret.value.trim() : ""
     };
@@ -425,12 +447,18 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      appendLog("CONFIG", data.message || "Configuración .env guardada con éxito.", "log-success");
-      settingsOverlay.style.display = "none";
-      loadWeather();
-      checkGoogleLinkStatus();
+      if (res.ok) {
+        appendLog("CONFIG", data.message || "Configuración .env guardada con éxito.", "log-success");
+        StarkAudio.playSuccess();
+        settingsOverlay.style.display = "none";
+        loadWeather();
+        checkGoogleLinkStatus();
+      } else {
+        appendLog("CONFIG", data.detail || data.error || "Error al actualizar configuración.", "log-warn");
+        StarkAudio.playAlert();
+      }
     } catch (e) {
-      alert("Error guardando configuraciones");
+      appendLog("CONFIG", "Error de red al guardar configuración.", "log-warn");
     }
   });
 
@@ -856,54 +884,222 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {}
   }
 
-  // --- RECONOCIMIENTO DE VOZ POR MICRÓFONO EN EL NAVEGADOR ---
+  // =========================================================================
+  // --- MOTOR ROBUSTO DE VOZ: PERMISOS MICRÓFONO, SPEECH RECOGNITION & AUDIO ---
+  // =========================================================================
   let recognition = null;
-  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SpeechRec) {
-    recognition = new SpeechRec();
-    recognition.lang = "es-CL";
-    recognition.continuous = false;
-    recognition.interimResults = false;
+  let micMediaStream = null;
+  let micAudioContext = null;
+  let micAnalyser = null;
+  let micAnimFrame = null;
+  let isListening = false;
 
-    recognition.onstart = () => {
-      btnTalkMic.textContent = "🎙️ ESCUCHANDO...";
-      btnTalkMic.style.background = "rgba(255, 51, 102, 0.35)";
-      btnTalkMic.style.borderColor = "var(--red-alert)";
+  const btnMicText = btnTalkMic ? (btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic) : null;
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  function setListeningUI(active, labelText = "HABLAR CON V.I.E.R.N.E.S.") {
+    isListening = active;
+    if (!btnTalkMic) return;
+
+    if (active) {
+      btnTalkMic.classList.add("is-listening");
+      if (btnMicText) btnMicText.textContent = labelText;
       if (voiceStateTag) {
-        voiceStateTag.textContent = "ESCUCHANDO ORDEN...";
+        voiceStateTag.textContent = "🎙️ ESCUCHANDO TU VOZ...";
         voiceStateTag.style.color = "var(--red-alert)";
       }
-      StarkAudio.playBlip(600, 0.05);
-    };
-
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      if (transcript && promptInput) {
-        promptInput.value = transcript;
-        btnPromptSend.click();
-      }
-    };
-
-    recognition.onerror = (e) => {
-      btnTalkMic.textContent = "🎙️ HABLAR / MICRÓFONO";
-      btnTalkMic.style.background = "";
-      btnTalkMic.style.borderColor = "";
-      appendLog("VOZ", "No se detectó audio en el micrófono del navegador.", "log-warn");
-    };
-
-    recognition.onend = () => {
-      btnTalkMic.textContent = "🎙️ HABLAR / MICRÓFONO";
-      btnTalkMic.style.background = "";
-      btnTalkMic.style.borderColor = "";
+    } else {
+      btnTalkMic.classList.remove("is-listening");
+      if (btnMicText) btnMicText.textContent = labelText;
       if (voiceStateTag && !isSpeaking) {
         voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
         voiceStateTag.style.color = "var(--cyan-stark)";
       }
+    }
+  }
+
+  async function startMicVisualizer(stream) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!micAudioContext || micAudioContext.state === "closed") {
+        micAudioContext = new AudioCtx();
+      }
+      if (micAudioContext.state === "suspended") {
+        await micAudioContext.resume();
+      }
+
+      const source = micAudioContext.createMediaStreamSource(stream);
+      micAnalyser = micAudioContext.createAnalyser();
+      micAnalyser.fftSize = 256;
+      micAnalyser.smoothingTimeConstant = 0.4;
+      source.connect(micAnalyser);
+
+      const bufferLength = micAnalyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      function updateMicRms() {
+        if (!isListening || !micAnalyser) {
+          if (!isSpeaking) currentAudioRms = 0.02;
+          return;
+        }
+        micAnalyser.getByteTimeDomainData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const val = (dataArray[i] - 128) / 128;
+          sum += val * val;
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        currentAudioRms = Math.min(0.95, Math.max(0.05, rms * 4.0));
+        micAnimFrame = requestAnimationFrame(updateMicRms);
+      }
+      updateMicRms();
+    } catch (e) {
+      console.warn("Visualizador de micrófono:", e);
+    }
+  }
+
+  function stopMicVisualizer() {
+    if (micAnimFrame) {
+      cancelAnimationFrame(micAnimFrame);
+      micAnimFrame = null;
+    }
+    if (micMediaStream) {
+      try {
+        micMediaStream.getTracks().forEach((track) => track.stop());
+      } catch (e) {}
+      micMediaStream = null;
+    }
+    micAnalyser = null;
+    if (!isSpeaking) currentAudioRms = 0.02;
+  }
+
+  if (SpeechRec) {
+    recognition = new SpeechRec();
+    recognition.lang = "es-CL";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setListeningUI(true, "🎙️ ESCUCHANDO...");
+      StarkAudio.playBlip(650, 0.05);
+      appendLog("VOZ", "Micrófono activado. Habla ahora tu comando...", "log-info");
+    };
+
+    recognition.onresult = (event) => {
+      let interimTranscript = "";
+      let finalTranscript = "";
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      if (promptInput) {
+        promptInput.value = finalTranscript || interimTranscript;
+      }
+
+      if (finalTranscript.trim()) {
+        appendLog("VOZ", `Dictado: "${finalTranscript.trim()}"`, "log-info");
+        btnPromptSend.click();
+      }
+    };
+
+    recognition.onerror = (event) => {
+      const err = event.error;
+      stopMicVisualizer();
+      setListeningUI(false);
+
+      if (err === "no-speech") {
+        appendLog("VOZ", "No se detectó voz en el micrófono.", "log-warn");
+      } else if (err === "not-allowed" || err === "service-not-allowed") {
+        appendLog("VOZ", "Permiso de micrófono denegado. Haz clic en el ícono de candado/permisos en la barra de URL para habilitar el micrófono.", "log-warn");
+        StarkAudio.playAlert();
+      } else if (err === "audio-capture") {
+        appendLog("VOZ", "No se encontró dispositivo de micrófono.", "log-warn");
+      } else if (err !== "aborted") {
+        appendLog("VOZ", `Error en reconocimiento de voz: ${err}`, "log-warn");
+      }
+    };
+
+    recognition.onend = () => {
+      stopMicVisualizer();
+      setListeningUI(false);
     };
   }
 
-  btnPromptSend.addEventListener("click", async () => {
-    const text = promptInput.value.trim();
+  async function handleMicButtonClick() {
+    if (isListening) {
+      if (recognition) {
+        try { recognition.stop(); } catch (e) {}
+      }
+      stopMicVisualizer();
+      setListeningUI(false);
+      return;
+    }
+
+    // Solicitar permiso de micrófono explícito si el navegador lo soporta
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const userStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        micMediaStream = userStream;
+        startMicVisualizer(userStream);
+      } catch (mediaErr) {
+        if (mediaErr.name === "NotAllowedError" || mediaErr.name === "PermissionDeniedError") {
+          appendLog("VOZ", "Permiso de micrófono denegado en el navegador. Habilítalo en la barra de direcciones.", "log-warn");
+          StarkAudio.playAlert();
+          return;
+        } else if (mediaErr.name === "NotFoundError" || mediaErr.name === "DevicesNotFoundError") {
+          appendLog("VOZ", "No se detectó ningún micrófono conectado.", "log-warn");
+          return;
+        }
+      }
+    } else {
+      if (window.location.protocol !== "https:" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+        appendLog("VOZ", "Contexto HTTP inseguro: Accede por HTTPS para habilitar el micrófono.", "log-warn");
+      }
+    }
+
+    if (recognition) {
+      try {
+        recognition.start();
+      } catch (recErr) {
+        try {
+          recognition.stop();
+          setTimeout(() => recognition.start(), 150);
+        } catch (e) {
+          stopMicVisualizer();
+          setListeningUI(false);
+        }
+      }
+    } else {
+      appendLog("VOZ", "Activando escucha directa en Raspberry Pi 5...", "log-info");
+      setListeningUI(true, "GRABANDO (PI 5)...");
+      await secureFetch("/api/wakeword/trigger", { method: "POST" });
+      setTimeout(() => {
+        stopMicVisualizer();
+        setListeningUI(false);
+      }, 4000);
+    }
+  }
+
+  if (btnTalkMic) {
+    btnTalkMic.addEventListener("click", handleMicButtonClick);
+  }
+
+  btnPromptSend?.addEventListener("click", async () => {
+    const text = promptInput ? promptInput.value.trim() : "";
     if (!text) return;
     promptInput.value = "";
     appendLog("BRUNO", text, "log-info");
@@ -919,70 +1115,67 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ prompt: text })
       });
       const data = await res.json();
-      if (data && data.response) {
+      if (res.ok && data && data.response) {
         appendLog("VIERNES", data.response, "log-system");
         speakText(data.response);
+      } else {
+        appendLog("VIERNES", data?.detail || data?.error || "Error al procesar la respuesta del modelo.", "log-warn");
+        StarkAudio.playAlert();
       }
       loadMemory();
     } catch (e) {
-      appendLog("VIERNES", "Error al procesar comando con el núcleo de IA.", "log-warn");
+      appendLog("VIERNES", "Error de red al comunicarse con el núcleo de IA.", "log-warn");
     } finally {
       btnPromptSend.disabled = false;
       btnPromptSend.textContent = "ENVIAR";
     }
   });
 
-  promptInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") btnPromptSend.click();
+  promptInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") btnPromptSend?.click();
   });
 
-  btnTalkMic.addEventListener("click", async () => {
-    if (recognition) {
-      try {
-        recognition.start();
-        appendLog("VOZ", "Micrófono del navegador activado. Habla ahora...", "log-info");
-      } catch (err) {
-        recognition.stop();
-      }
-    } else {
-      appendLog("VOZ", "Activando escucha permanente en Raspberry Pi 5...", "log-info");
-    }
-    await secureFetch("/api/wakeword/trigger", { method: "POST" });
-  });
-
-  btnRescanNet.addEventListener("click", async () => {
+  btnRescanNet?.addEventListener("click", async () => {
     appendLog("RED", "Iniciando Reconocimiento Rápido Nmap + NetBIOS en subred activa...", "log-info");
     await secureFetch("/api/scan", { method: "POST" });
     await loadDevices();
     appendLog("RED", "✓ Reconocimiento de red completado y matriz actualizada.", "log-success");
   });
 
-  btnMakeCall.addEventListener("click", async () => {
-    const num = phoneInput.value.trim();
+  btnMakeCall?.addEventListener("click", async () => {
+    const num = phoneInput ? phoneInput.value.trim() : "";
     if (!num) return;
     appendLog("SIP", `Marcando a celular ${num}...`, "log-info");
-    const res = await secureFetch("/api/call", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone_number: num })
-    });
-    const data = await res.json();
-    appendLog("SIP", data.message, "log-success");
+    try {
+      const res = await secureFetch("/api/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_number: num })
+      });
+      const data = await res.json();
+      appendLog("SIP", data.message || "Llamada SIP enviada.", res.ok ? "log-success" : "log-warn");
+    } catch (e) {
+      appendLog("SIP", "Error al iniciar llamada SIP.", "log-warn");
+    }
   });
 
-  btnAddMemory.addEventListener("click", async () => {
+  btnAddMemory?.addEventListener("click", async () => {
     const concept = prompt("Concepto o etiqueta de la memoria (ej: cafe_favorito, stack_tecnologico):");
     if (!concept) return;
     const content = prompt(`Detalle a recordar para '${concept}':`);
     if (!content) return;
 
-    await secureFetch("/api/memory", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category: "preference", key_concept: concept, content })
-    });
-    appendLog("MEMORIA", `Nueva preferencia vectorizada en RAG: ${concept}`, "log-success");
-    loadMemory();
+    try {
+      await secureFetch("/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: "preference", key_concept: concept, content })
+      });
+      appendLog("MEMORIA", `Nueva preferencia vectorizada en RAG: ${concept}`, "log-success");
+      loadMemory();
+    } catch (e) {
+      appendLog("MEMORIA", "Error guardando memoria en vector RAG.", "log-warn");
+    }
   });
 
   // =========================================================================
@@ -1001,7 +1194,7 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      appendLog("REMOTE", data.message || `Comando '${command}' ejecutado en ${targetIp}`, "log-info");
+      appendLog("REMOTE", data.message || `Comando '${command}' ejecutado en ${targetIp}`, res.ok ? "log-info" : "log-warn");
     } catch (e) {
       appendLog("REMOTE", `Fallo al enviar comando '${command}' a ${targetIp}`, "log-warn");
     }
@@ -1033,13 +1226,27 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-app-prime")?.addEventListener("click", () => sendTvCommand("launch_app", { app_id: "prime_video" }));
   document.getElementById("btn-app-spotify")?.addEventListener("click", () => sendTvCommand("launch_app", { app_id: "spotify" }));
 
-  // Navegación por Teclado Físico (D-Pad)
+  // Navegación por Teclado Físico (D-Pad protegida)
   window.addEventListener("keydown", (e) => {
-    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+    // Si hay un modal abierto o el foco está en un input/textarea, ignorar teclas de TV
+    const activeEl = document.activeElement;
+    if (activeEl && ["INPUT", "TEXTAREA", "SELECT"].includes(activeEl.tagName)) return;
+
+    const authModal = document.getElementById("auth-modal-overlay");
+    const settingsModal = document.getElementById("settings-modal-overlay");
+    const emailModal = document.getElementById("email-reader-modal-overlay");
+
+    if (authModal && !authModal.classList.contains("authenticated")) return;
+    if (settingsModal && settingsModal.style.display === "flex") return;
+    if (emailModal && emailModal.style.display === "flex") return;
+
     if (e.key === "ArrowUp") { e.preventDefault(); document.getElementById("btn-dpad-up")?.click(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); document.getElementById("btn-dpad-down")?.click(); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); document.getElementById("btn-dpad-left")?.click(); }
     else if (e.key === "ArrowRight") { e.preventDefault(); document.getElementById("btn-dpad-right")?.click(); }
+    else if (e.key === "Enter" && !e.repeat && document.getElementById("btn-dpad-ok")) {
+      document.getElementById("btn-dpad-ok")?.click();
+    }
   });
 
   // =========================================================================
@@ -1066,21 +1273,26 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!emailModalOverlay) return;
     StarkAudio.playBlip(1050, 0.04);
 
-    document.getElementById("modal-mail-sender").textContent = emailData.sender || "Desconocido";
-    document.getElementById("modal-mail-subject").textContent = emailData.subject || "(Sin Asunto)";
-    document.getElementById("modal-mail-date").textContent = emailData.date || new Date().toLocaleString();
-    document.getElementById("modal-mail-content").textContent = emailData.snippet || emailData.body || "Sin contenido disponible.";
+    const elSender = document.getElementById("modal-mail-sender");
+    const elSubject = document.getElementById("modal-mail-subject");
+    const elDate = document.getElementById("modal-mail-date");
+    const elContent = document.getElementById("modal-mail-content");
 
-    const fullText = `${emailData.subject} ${emailData.snippet || ''} ${emailData.body || ''}`;
+    if (elSender) elSender.textContent = emailData.sender || "Desconocido";
+    if (elSubject) elSubject.textContent = emailData.subject || "(Sin Asunto)";
+    if (elDate) elDate.textContent = emailData.date || new Date().toLocaleString();
+    if (elContent) elContent.textContent = emailData.snippet || emailData.body || "Sin contenido disponible.";
+
+    const fullText = `${emailData.subject || ''} ${emailData.snippet || ''} ${emailData.body || ''}`;
     const detectedOtp = (emailData.otp && emailData.otp.code) ? emailData.otp.code : extractOtpCode(fullText);
     const otpBanner = document.getElementById("otp-tactical-banner");
     const otpValEl = document.getElementById("otp-code-value");
 
-    if (detectedOtp) {
+    if (detectedOtp && otpBanner && otpValEl) {
       otpBanner.style.display = "flex";
       otpValEl.textContent = detectedOtp;
       StarkAudio.playAlert();
-    } else {
+    } else if (otpBanner) {
       otpBanner.style.display = "none";
     }
 
@@ -1094,8 +1306,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const code = document.getElementById("otp-code-value")?.textContent;
     if (!code) return;
 
-    try {
-      await navigator.clipboard.writeText(code);
+    let copySuccess = false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(code);
+        copySuccess = true;
+      } catch (e) {}
+    }
+
+    // Fallback táctico si Clipboard API está restringida
+    if (!copySuccess) {
+      try {
+        const tempTa = document.createElement("textarea");
+        tempTa.value = code;
+        tempTa.style.position = "fixed";
+        tempTa.style.opacity = "0";
+        document.body.appendChild(tempTa);
+        tempTa.select();
+        document.execCommand("copy");
+        document.body.removeChild(tempTa);
+        copySuccess = true;
+      } catch (e) {}
+    }
+
+    if (copySuccess) {
       StarkAudio.playSuccess();
       const btnText = document.getElementById("btn-copy-otp-text");
       if (btnText) {
@@ -1104,7 +1338,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setTimeout(() => btnText.textContent = orig, 2500);
       }
       appendLog("AUTH/OTP", `Código de seguridad ${code} copiado al portapapeles.`, "log-success");
-    } catch (e) {
+    } else {
       appendLog("AUTH/OTP", "No se pudo acceder al portapapeles del sistema.", "log-warn");
     }
   });
@@ -1161,3 +1395,4 @@ document.addEventListener("DOMContentLoaded", () => {
   // Inicializar estado de Google al arrancar
   checkGoogleLinkStatus();
 });
+

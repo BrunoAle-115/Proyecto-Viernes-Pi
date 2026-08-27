@@ -110,6 +110,12 @@ class SSLManager:
             with open(self.cert_file, "wb") as f:
                 f.write(cert.public_bytes(serialization.Encoding.PEM))
 
+            try:
+                os.chmod(self.key_file, 0o600)
+                os.chmod(self.cert_dir, 0o700)
+            except Exception:
+                pass
+
             logger.info(f"✓ Certificado TLS generado con éxito en: {self.cert_file}")
             return True
         except ImportError:
@@ -135,6 +141,11 @@ class SSLManager:
                 "-addext", f"subjectAltName={san_str}"
             ]
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                os.chmod(self.key_file, 0o600)
+                os.chmod(self.cert_dir, 0o700)
+            except Exception:
+                pass
             logger.info(f"✓ Certificado TLS generado con openssl en: {self.cert_file}")
             return True
         except Exception as e:
