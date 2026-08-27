@@ -241,6 +241,8 @@ class SettingsUpdateRequest(BaseModel):
     zoho_password: Optional[str] = None
     sip_provider: Optional[str] = None
     default_city: Optional[str] = None
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
 
 
 # Dependencia de Autenticación Centralizada (Anti-IDOR y Dual Header/Cookie)
@@ -313,6 +315,27 @@ async def api_google_login(request: Request):
     from viernes.auth.google_oauth import google_oauth
     redirect_uri = os.getenv("GOOGLE_REDIRECT_URI") or f"{str(request.base_url).rstrip('/')}/api/auth/google/callback"
     auth_url = google_oauth.get_authorization_url(redirect_uri)
+    if not auth_url:
+        html_setup = """
+        <html>
+          <body style="background:#040812;color:#e2f1ff;font-family:'Rajdhani',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;padding:24px;text-align:center;">
+            <div style="background:#091326;border:1px solid #00f0ff;box-shadow:0 0 25px rgba(0,240,255,0.3);padding:30px;border-radius:6px;max-width:560px;">
+              <h2 style="color:#ffb700;font-family:sans-serif;margin-bottom:12px;">⚠️ GOOGLE OAUTH2 PENDIENTE DE CONFIGURAR</h2>
+              <p style="color:#8ba3c7;font-size:14px;line-height:1.6;margin-bottom:18px;">
+                Para conectar tu cuenta de Google (Gmail API & Google Home), ingresa tus credenciales de Google Cloud Console (ID de cliente y Secret) en el <strong>Portal de Configuración (.ENV)</strong> del HUD o coloca tu archivo <code>credentials.json</code> en la carpeta <code>credentials/</code>.
+              </p>
+              <div style="background:rgba(0,0,0,0.5);border:1px dashed #00f0ff;padding:12px;font-family:monospace;font-size:12px;color:#00f0ff;text-align:left;margin-bottom:20px;">
+                GOOGLE_CLIENT_ID="tu-client-id.apps.googleusercontent.com"<br>
+                GOOGLE_CLIENT_SECRET="tu-client-secret"
+              </div>
+              <button onclick="window.close()" style="background:#00f0ff;color:#000;border:none;padding:10px 20px;font-weight:bold;cursor:pointer;border-radius:3px;">
+                CERRAR VENTANA Y ABRIR AJUSTES
+              </button>
+            </div>
+          </body>
+        </html>
+        """
+        return HTMLResponse(content=html_setup, status_code=200)
     return RedirectResponse(auth_url)
 
 @app.get("/api/auth/google/callback")
@@ -562,6 +585,12 @@ async def get_settings_api(user: dict = Depends(get_current_user)):
     raw_gh = os.getenv("GITHUB_TOKEN", "")
     masked_gh = raw_gh[:6] + "..." + raw_gh[-4:] if len(raw_gh) > 10 else ""
 
+    raw_g_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    masked_g_id = raw_g_id[:8] + "..." + raw_g_id[-8:] if len(raw_g_id) > 16 else ""
+
+    raw_g_sec = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    masked_g_sec = "••••••••••••" if raw_g_sec else ""
+
     return {
         "gemini_api_key_masked": masked_key,
         "gemini_model": models_manager.active_model,
@@ -572,6 +601,8 @@ async def get_settings_api(user: dict = Depends(get_current_user)):
         "sip_provider": os.getenv("SIP_PROVIDER", "zadarma_chile"),
         "sip_did_number": os.getenv("SIP_DID_NUMBER", "+56912345678"),
         "default_city": os.getenv("DEFAULT_CITY", "santiago"),
+        "google_client_id_masked": masked_g_id,
+        "google_client_secret_masked": masked_g_sec,
         "web_port": int(os.getenv("WEB_PORT", 9090))
     }
 
@@ -611,6 +642,14 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
         os.environ["SIP_PROVIDER"] = req.sip_provider
         sip_mgr.provider_name = req.sip_provider
         updates["SIP_PROVIDER"] = f'"{req.sip_provider}"'
+
+    if req.google_client_id and not req.google_client_id.startswith("tu-client-id") and not "..." in req.google_client_id:
+        os.environ["GOOGLE_CLIENT_ID"] = req.google_client_id.strip()
+        updates["GOOGLE_CLIENT_ID"] = f'"{req.google_client_id.strip()}"'
+
+    if req.google_client_secret and not req.google_client_secret.startswith("•••") and not req.google_client_secret.startswith("tu-client-sec"):
+        os.environ["GOOGLE_CLIENT_SECRET"] = req.google_client_secret.strip()
+        updates["GOOGLE_CLIENT_SECRET"] = f'"{req.google_client_secret.strip()}"'
 
     # Escribir en .env
     if os.path.exists(ENV_PATH) and updates:

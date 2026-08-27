@@ -30,6 +30,8 @@ wheels/
 # SQLite database & runtime data
 data/*.db
 data/devices.json
+data/ssl/
+credentials/*.json
 
 # Logs
 *.log

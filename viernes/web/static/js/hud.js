@@ -31,6 +31,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const cfgGithubRepos = document.getElementById("cfg-github-repos");
   const cfgSipProvider = document.getElementById("cfg-sip-provider");
   const cfgCity = document.getElementById("cfg-city");
+  const cfgGoogleClientId = document.getElementById("cfg-google-client-id");
+  const cfgGoogleClientSecret = document.getElementById("cfg-google-client-secret");
 
   const liveClock = document.getElementById("live-clock");
   const liveDate = document.getElementById("live-date");
@@ -391,6 +393,8 @@ document.addEventListener("DOMContentLoaded", () => {
         cfgGithubRepos.value = s.github_repos || "BrunoAle-115/Proyecto-Viernes-Pi";
         cfgSipProvider.value = s.sip_provider || "zadarma_chile";
         cfgCity.value = s.default_city || "santiago";
+        if (cfgGoogleClientId) cfgGoogleClientId.value = s.google_client_id_masked || "";
+        if (cfgGoogleClientSecret) cfgGoogleClientSecret.value = s.google_client_secret_masked || "";
         await fetchAndPopulateGeminiModels("", s.gemini_model);
       }
     } catch (e) {
@@ -409,7 +413,9 @@ document.addEventListener("DOMContentLoaded", () => {
       github_token: cfgGithubToken.value.trim(),
       github_repos: cfgGithubRepos.value.trim(),
       sip_provider: cfgSipProvider.value,
-      default_city: cfgCity.value
+      default_city: cfgCity.value,
+      google_client_id: cfgGoogleClientId ? cfgGoogleClientId.value.trim() : "",
+      google_client_secret: cfgGoogleClientSecret ? cfgGoogleClientSecret.value.trim() : ""
     };
 
     try {
@@ -422,6 +428,7 @@ document.addEventListener("DOMContentLoaded", () => {
       appendLog("CONFIG", data.message || "Configuración .env guardada con éxito.", "log-success");
       settingsOverlay.style.display = "none";
       loadWeather();
+      checkGoogleLinkStatus();
     } catch (e) {
       alert("Error guardando configuraciones");
     }

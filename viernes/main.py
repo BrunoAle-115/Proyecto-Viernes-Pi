@@ -91,8 +91,9 @@ async def start_assistant():
 
 
 def main():
-    """Función de arranque con Auto-Switching de Puertos."""
+    """Función de arranque con Auto-Switching de Puertos y soporte HTTPS (Secure Contexts)."""
     from viernes.core.port_manager import port_manager
+    from viernes.core.ssl_manager import ssl_mgr
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -109,10 +110,30 @@ def main():
     requested_port = int(os.getenv("WEB_PORT", 9090))
     port = port_manager.get_available_port(requested_port, fallback_range=15, service_name="WebHUD")
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", loop="asyncio")
+    enable_ssl = os.getenv("ENABLE_SSL", "true").lower() in ("true", "1", "yes")
+    cert_file, key_file = (None, None)
+    if enable_ssl:
+        cert_file, key_file = ssl_mgr.get_ssl_files()
+
+    uvicorn_kwargs = {
+        "app": app,
+        "host": host,
+        "port": port,
+        "log_level": "warning",
+        "loop": "asyncio"
+    }
+
+    if cert_file and key_file:
+        uvicorn_kwargs["ssl_keyfile"] = key_file
+        uvicorn_kwargs["ssl_certfile"] = cert_file
+        logger.info("🔒 [HTTPS] Modo Seguro Activo: Soporte nativo para Micrófono Web y SpeechRecognition.")
+        logger.info(f"Dashboard HUD seguro disponible en: https://localhost:{port} (o https://192.168.100.43:{port})")
+    else:
+        logger.info(f"Dashboard HUD disponible en: http://localhost:{port} (o http://<IP_PI5>:{port})")
+
+    config = uvicorn.Config(**uvicorn_kwargs)
     server = uvicorn.Server(config)
 
-    logger.info(f"Dashboard HUD disponible en: http://localhost:{port} (o http://<IP_PI5>:{port})")
     try:
         loop.run_until_complete(server.serve())
     except (KeyboardInterrupt, SystemExit):
