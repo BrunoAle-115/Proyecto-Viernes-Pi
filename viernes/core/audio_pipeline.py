@@ -254,9 +254,9 @@ class UniversalAudioPipeline:
 
             try:
                 cur_in, cur_out = self.discover_hardware_devices()
-                # Si los dispositivos cambiaron (ej: se enchufó un nuevo micrófono USB)
-                if cur_in != last_in or cur_out != last_out or not self.is_recording:
-                    logger.info("🔄 [Audio Hot-Plug] Dispositivos de audio USB cambiaron. Re-inicializando pipeline...")
+                # Si los dispositivos cambiaron físicamente (ej: se enchufó un nuevo micrófono USB)
+                if (cur_in != last_in or cur_out != last_out) and (cur_in is not None or cur_out is not None):
+                    logger.info("🔄 [Audio Hot-Plug] Dispositivos de audio USB detectados. Re-inicializando pipeline...")
                     last_in = cur_in
                     last_out = cur_out
                     await self.restart()
