@@ -382,14 +382,15 @@ body.hud-body {
 
 /* HUD Panels */
 .hud-panel {
-  background: var(--bg-panel);
+  background: rgba(8, 17, 34, 0.94);
   border: 1px solid var(--border-cyan);
   border-radius: 4px;
-  backdrop-filter: blur(10px);
   position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  contain: content;
+  transform: translateZ(0);
 }
 
 .panel-header {
@@ -442,6 +443,8 @@ body.hud-body {
 .scrollable-content {
   max-height: 250px;
   overflow-y: auto;
+  content-visibility: auto;
+  contain-intrinsic-size: 150px;
 }
 
 /* Visualizer Container */

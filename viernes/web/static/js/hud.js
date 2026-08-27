@@ -114,19 +114,31 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(updateClock, 1000);
   updateClock();
 
-  // 2. Quantum Arc Reactor Visualizer (HiDPI Responsive)
+  // 2. Quantum Arc Reactor Visualizer (Ultra-Optimized Lightweight Canvas)
   let phase = 0;
+  let lastFrameTime = 0;
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x max to prevent 4k mobile lag
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
   }
-  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("resize", resizeCanvas, { passive: true });
   resizeCanvas();
 
-  function drawWaveform() {
+  function drawWaveform(timestamp = 0) {
+    if (document.hidden) {
+      requestAnimationFrame(drawWaveform);
+      return;
+    }
+    // Cap visualizer at 35 FPS to yield main-thread CPU cycles to pointer interactions (INP < 50ms)
+    if (timestamp - lastFrameTime < 28) {
+      requestAnimationFrame(drawWaveform);
+      return;
+    }
+    lastFrameTime = timestamp;
+
     const rect = canvas.getBoundingClientRect();
     const width = rect.width;
     const height = rect.height;
@@ -134,57 +146,50 @@ document.addEventListener("DOMContentLoaded", () => {
     const cy = height / 2;
 
     ctx.clearRect(0, 0, width, height);
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
 
-    const baseColor = isSpeaking ? "rgba(255, 183, 0, 0.9)" : "rgba(0, 240, 255, 0.9)";
-    const glowColor = isSpeaking ? "rgba(255, 183, 0, 0.45)" : "rgba(0, 240, 255, 0.35)";
+    const baseColor = isSpeaking ? "#ffb700" : "#00f0ff";
+    const glowColor = isSpeaking ? "rgba(255, 183, 0, 0.25)" : "rgba(0, 240, 255, 0.25)";
 
-    // 1. Anillo Segmentado Arc Reactor (Rotating Segmented Ticks)
+    // 1. Anillo Segmentado Arc Reactor
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(phase * 0.4);
     ctx.strokeStyle = baseColor;
-    ctx.lineWidth = 2;
-    ctx.shadowBlur = 16;
-    ctx.shadowColor = glowColor;
+    ctx.lineWidth = 1.5;
 
-    const segments = 12;
-    const ringRadius = 22 + currentAudioRms * 18;
+    const segments = 10;
+    const ringRadius = 22 + currentAudioRms * 16;
     for (let i = 0; i < segments; i++) {
       const angle = (i * 2 * Math.PI) / segments;
       ctx.beginPath();
-      ctx.arc(0, 0, ringRadius, angle, angle + 0.28);
+      ctx.arc(0, 0, ringRadius, angle, angle + 0.32);
       ctx.stroke();
     }
 
     // Anillo interno en contra-rotación
     ctx.rotate(-phase * 0.8);
     ctx.beginPath();
-    ctx.arc(0, 0, 10 + (isSpeaking ? Math.sin(phase * 2) * 3 : currentAudioRms * 8), 0, Math.PI * 2);
+    ctx.arc(0, 0, 9 + (isSpeaking ? Math.sin(phase * 2) * 2.5 : currentAudioRms * 6), 0, Math.PI * 2);
     ctx.fillStyle = glowColor;
     ctx.fill();
     ctx.stroke();
     ctx.restore();
 
-    // 2. Ondas Cuánticas Multicapa (Quantum Wave Ribbons)
-    const baseAmp = isSpeaking ? 30 : Math.max(8, currentAudioRms * 90);
+    // 2. Ondas Cuánticas Multicapa (Glow por multi-stroke de bajo costo)
+    const baseAmp = isSpeaking ? 28 : Math.max(6, currentAudioRms * 80);
     const layers = [
-      { color: baseColor, freq: 0.035, speed: 1.0, width: 2.0 },
-      { color: "rgba(0, 255, 157, 0.7)", freq: 0.065, speed: -1.4, width: 1.2 },
-      { color: "rgba(0, 150, 255, 0.4)", freq: 0.02, speed: 0.7, width: 1.0 }
+      { color: baseColor, freq: 0.035, speed: 1.0, width: 1.8 },
+      { color: "rgba(0, 255, 157, 0.7)", freq: 0.06, speed: -1.2, width: 1.0 }
     ];
 
     layers.forEach((l) => {
       ctx.beginPath();
       ctx.lineWidth = l.width;
       ctx.strokeStyle = l.color;
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = l.color;
 
-      for (let x = 0; x < width; x += 2) {
+      for (let x = 0; x < width; x += 4) {
         const dist = Math.abs(x - cx) / (width * 0.5);
-        const envelope = Math.pow(Math.max(0, 1 - dist), 1.6);
+        const envelope = Math.max(0, 1 - dist * dist);
         const y = cy + Math.sin(x * l.freq + phase * l.speed) * baseAmp * envelope;
         if (x === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
@@ -192,11 +197,10 @@ document.addEventListener("DOMContentLoaded", () => {
       ctx.stroke();
     });
 
-    ctx.restore();
-    phase += 0.07;
+    phase += 0.06;
     requestAnimationFrame(drawWaveform);
   }
-  drawWaveform();
+  requestAnimationFrame(drawWaveform);
 
   // Helper fetch with Auth Headers & 401 handling
   async function secureFetch(url, options = {}) {
@@ -528,19 +532,26 @@ document.addEventListener("DOMContentLoaded", () => {
         const msg = JSON.parse(event.data);
         if (msg.type === "telemetry") {
           const t = msg.data;
-          cpuTemp.textContent = `${t.cpu.temperature_c}°C`;
-          cpuLoad.textContent = `${Math.round(t.cpu.percent)}%`;
-          ramUsage.textContent = `${Math.round(t.ram.percent)}%`;
-          hostIp.textContent = `IP: ${escapeHtml(t.local_ip)}`;
-          currentAudioRms = t.audio_rms || 0.02;
-          isSpeaking = t.is_speaking || false;
+          const newTemp = `${t.cpu.temperature_c}°C`;
+          if (cpuTemp.textContent !== newTemp) cpuTemp.textContent = newTemp;
+          const newLoad = `${Math.round(t.cpu.percent)}%`;
+          if (cpuLoad.textContent !== newLoad) cpuLoad.textContent = newLoad;
+          const newRam = `${Math.round(t.ram.percent)}%`;
+          if (ramUsage.textContent !== newRam) ramUsage.textContent = newRam;
+          const newIp = `IP: ${escapeHtml(t.local_ip)}`;
+          if (hostIp.textContent !== newIp) hostIp.textContent = newIp;
 
-          if (isSpeaking) {
-            voiceStateTag.textContent = "TRANSMITIENDO VOZ";
-            voiceStateTag.style.color = "var(--gold-stark)";
-          } else {
-            voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
-            voiceStateTag.style.color = "var(--cyan-stark)";
+          currentAudioRms = t.audio_rms || 0.02;
+          const newSpeaking = t.is_speaking || false;
+          if (isSpeaking !== newSpeaking) {
+            isSpeaking = newSpeaking;
+            if (isSpeaking) {
+              voiceStateTag.textContent = "TRANSMITIENDO VOZ";
+              voiceStateTag.style.color = "var(--gold-stark)";
+            } else {
+              voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
+              voiceStateTag.style.color = "var(--cyan-stark)";
+            }
           }
         } else if (msg.type === "event") {
           appendLog(msg.topic, JSON.stringify(msg.data), "log-info");
@@ -555,6 +566,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function appendLog(topic, text, typeClass = "log-system") {
+    // Mantener un máximo de 40 logs para evitar fugas de memoria y lag de scroll
+    while (termLogs.children.length >= 40) {
+      termLogs.removeChild(termLogs.firstChild);
+    }
     const entry = document.createElement("div");
     entry.className = `log-entry ${typeClass}`;
     entry.textContent = `[${escapeHtml(topic.toUpperCase())}] ${text}`;

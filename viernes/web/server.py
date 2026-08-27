@@ -430,7 +430,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
                 "type": "telemetry",
                 "data": telemetry
             })
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception as e:
