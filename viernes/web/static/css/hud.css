@@ -83,10 +83,15 @@ body.hud-body {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   z-index: 99999;
-  display: flex;
+  display: flex !important;
   align-items: center;
   justify-content: center;
   pointer-events: auto;
+}
+
+/* ONLY this class can hide the login modal — added by JS after confirmed auth */
+.auth-modal-overlay.authenticated {
+  display: none !important;
 }
 
 .auth-card {

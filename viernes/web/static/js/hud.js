@@ -132,7 +132,7 @@ document.addEventListener("DOMContentLoaded", () => {
   resizeCanvas();
 
   function drawWaveform(timestamp = 0) {
-    if (authOverlay && authOverlay.style.display !== "none") {
+    if (authOverlay && !authOverlay.classList.contains("authenticated")) {
       setTimeout(() => requestAnimationFrame(drawWaveform), 250);
       return;
     }
@@ -221,7 +221,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (res.status === 401) {
       authToken = "";
       localStorage.removeItem("viernes_auth_token");
-      if (authOverlay) authOverlay.style.display = "flex";
+      if (authOverlay) authOverlay.classList.remove("authenticated");
     }
     return res;
   }
@@ -239,20 +239,20 @@ document.addEventListener("DOMContentLoaded", () => {
           sessionUserBadge.textContent = `👤 ${escapeHtml(email.split('@')[0].toUpperCase())}`;
           sessionUserBadge.style.display = "inline-block";
         }
-        if (authOverlay) authOverlay.style.display = "none";
+        if (authOverlay) authOverlay.classList.add("authenticated");
         loadAllData();
         connectWs();
       } else {
         authToken = "";
         localStorage.removeItem("viernes_auth_token");
         if (sessionUserBadge) sessionUserBadge.style.display = "none";
-        if (authOverlay) authOverlay.style.display = "flex";
+        if (authOverlay) authOverlay.classList.remove("authenticated");
       }
     } catch (e) {
       authToken = "";
       localStorage.removeItem("viernes_auth_token");
       if (sessionUserBadge) sessionUserBadge.style.display = "none";
-      if (authOverlay) authOverlay.style.display = "flex";
+      if (authOverlay) authOverlay.classList.remove("authenticated");
     }
   }
   checkAuth();
@@ -293,7 +293,7 @@ document.addEventListener("DOMContentLoaded", () => {
           sessionUserBadge.textContent = `👤 ${escapeHtml(email.split('@')[0].toUpperCase())}`;
           sessionUserBadge.style.display = "inline-block";
         }
-        if (overlay) overlay.style.display = "none";
+        if (overlay) overlay.classList.add("authenticated");
         appendLog("AUTH", `Bienvenido señor Bruno (${escapeHtml(email)}). Acceso táctico concedido.`, "log-success");
         loadAllData();
         connectWs();
@@ -317,7 +317,7 @@ document.addEventListener("DOMContentLoaded", () => {
     authToken = "";
     localStorage.removeItem("viernes_auth_token");
     if (sessionUserBadge) sessionUserBadge.style.display = "none";
-    if (authOverlay) authOverlay.style.display = "flex";
+    if (authOverlay) authOverlay.classList.remove("authenticated");
     if (ws) ws.close();
   });
 
