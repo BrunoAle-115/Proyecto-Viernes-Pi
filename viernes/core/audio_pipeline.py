@@ -59,7 +59,7 @@ class UniversalAudioPipeline:
     # =========================================================================
     # AUTO-DESCUBRIMIENTO UNIVERSAL DE HARDWARE USB (PnP)
     # =========================================================================
-    def discover_hardware_devices(self) -> Tuple[Optional[int], Optional[int]]:
+    def discover_hardware_devices(self, log_details: bool = True) -> Tuple[Optional[int], Optional[int]]:
         """
         Escanea todos los dispositivos ALSA/PulseAudio/PortAudio del sistema y
         prioriza automáticamente cualquier micrófono o parlante USB conectado.
@@ -112,8 +112,9 @@ class UniversalAudioPipeline:
         self.input_device_name = in_name
         self.output_device_name = out_name
 
-        logger.info(f"🎙️ Micrófono Seleccionado: [{in_id}] {in_name}")
-        logger.info(f"🔊 Parlante Seleccionado: [{out_id}] {out_name}")
+        if log_details:
+            logger.info(f"🎙️ Micrófono Seleccionado: [{in_id}] {in_name}")
+            logger.info(f"🔊 Parlante Seleccionado: [{out_id}] {out_name}")
         return in_id, out_id
 
     # =========================================================================
@@ -253,7 +254,7 @@ class UniversalAudioPipeline:
                 continue
 
             try:
-                cur_in, cur_out = self.discover_hardware_devices()
+                cur_in, cur_out = self.discover_hardware_devices(log_details=False)
                 # Si los dispositivos cambiaron físicamente (ej: se enchufó un nuevo micrófono USB)
                 if (cur_in != last_in or cur_out != last_out) and (cur_in is not None or cur_out is not None):
                     logger.info("🔄 [Audio Hot-Plug] Dispositivos de audio USB detectados. Re-inicializando pipeline...")

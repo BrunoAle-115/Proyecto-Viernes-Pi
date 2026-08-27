@@ -1216,35 +1216,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-    stop() {
-      this.isRecording = false;
-      if (this.flushTimer) clearTimeout(this.flushTimer);
-      this._flushBuffer();
-      if (this.sourceNode) {
-        try { this.sourceNode.disconnect(); } catch (e) {}
-        this.sourceNode = null;
-      }
-      if (this.processor) {
-        try { this.processor.disconnect(); } catch (e) {}
-        this.processor = null;
-      }
-      if (this.silentGain) {
-        try { this.silentGain.disconnect(); } catch (e) {}
-        this.silentGain = null;
-      }
-      if (this.mediaStream) {
-        try {
-          this.mediaStream.getTracks().forEach((track) => track.stop());
-        } catch (e) {}
-        this.mediaStream = null;
-      }
-      if (this.audioCtx) {
-        try { this.audioCtx.close(); } catch (e) {}
-        this.audioCtx = null;
-      }
-    }
-  }
-
   // 3. GESTIÓN DE SESIÓN DE VOZ EN VIVO (MANOS LIBRES / CONVERSACIONAL)
   window._isLiveSessionActive = false;
   window._isLocalAudioActive = false;
