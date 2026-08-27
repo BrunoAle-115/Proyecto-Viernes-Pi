@@ -229,7 +229,7 @@ async def api_auth_me(user: dict = Depends(get_current_user)):
 # --- RUTAS PRINCIPALES DEL HUD (PROTEGIDAS CONTRA IDOR) ---
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
-    return templates.TemplateResponse("hud.html", {"request": request, "title": "V.I.E.R.N.E.S. Stark HUD 2.0"})
+    return templates.TemplateResponse(request=request, name="hud.html", context={"title": "V.I.E.R.N.E.S. Stark HUD 2.0"})
 
 @app.get("/api/status")
 async def get_system_status():
