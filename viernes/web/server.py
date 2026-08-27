@@ -1,6 +1,6 @@
 """
-Servidor Web FastAPI y Hub de WebSockets para el Dashboard HUD de V.I.E.R.N.E.S.
-Incluye Autenticación Robusta, Portal de Configuración .env, Noticias, Clima y Mini-RAG.
+Servidor Web FastAPI y Hub de WebSockets Blindado para V.I.E.R.N.E.S. 2.0.
+Protección contra IDOR, XSS, Hijacking de WebSockets/WebRTC, Brute Force y Rate Limiting.
 """
 
 import os
@@ -12,7 +12,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, H
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel, Field, validator
 
 from viernes.core.telemetry import SystemTelemetry
 from viernes.core.event_bus import bus, Event
@@ -29,8 +31,9 @@ from viernes.scheduler.reminder_engine import reminder_engine
 from viernes.telephony.sip_manager import sip_mgr
 from viernes.services.news_chile import chile_news
 from viernes.services.weather_engine import weather_engine
-from viernes.memory.mini_rag import personal_rag
+from viernes.memory.vector_rag import vector_rag
 from viernes.auth.manager import auth_mgr, DEFAULT_ADMIN_EMAIL
+from viernes.auth.security import rate_limiter, auth_rate_limiter, sanitize_text, sanitize_ip_or_mac
 
 logger = logging.getLogger("viernes.web")
 
@@ -39,8 +42,43 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), ".env")
 
-app = FastAPI(title="V.I.E.R.N.E.S. HUD", description="Stark Industries AI Assistant Dashboard 2.0")
+app = FastAPI(
+    title="V.I.E.R.N.E.S. HUD",
+    description="Stark Industries AI Assistant Dashboard 2.0 - Security Hardened",
+    docs_url=None, # Deshabilitar Swagger UI público para evitar reconocimiento
+    redoc_url=None
+)
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+
+# --- MIDDLEWARE DE CABECERAS DE SEGURIDAD (Anti-XSS, Clickjacking, MIME Sniffing) ---
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        if not rate_limiter.is_allowed(client_ip):
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Too Many Requests. Rate limit exceeded por seguridad."}
+            )
+
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "frame-ancestors 'none';"
+        )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Montar archivos estáticos
 os.makedirs(STATIC_DIR, exist_ok=True)
@@ -72,7 +110,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-# Conectar el EventBus con el WebSocket broadcast
 async def on_system_event(event: Event):
     await ws_manager.broadcast({
         "type": "event",
@@ -85,38 +122,46 @@ async def on_system_event(event: Event):
 bus.subscribe("*", on_system_event)
 
 
-# Modelos Pydantic
+# Modelos Pydantic con Sanitización y Validación Robusta
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., max_length=120)
+    password: str = Field(..., max_length=128)
 
 class WolRequest(BaseModel):
-    target: str
+    target: str = Field(..., max_length=60)
+
+    @validator("target")
+    def sanitize_target(cls, v):
+        return sanitize_ip_or_mac(v)
 
 class LightRequest(BaseModel):
-    target: str
-    action: str = "toggle"
-    brightness: int = 100
+    target: str = Field(..., max_length=60)
+    action: str = Field(default="toggle", max_length=20)
+    brightness: int = Field(default=100, ge=1, le=100)
 
 class PromptRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(..., max_length=1000)
+
+    @validator("prompt")
+    def sanitize_prompt(cls, v):
+        return sanitize_text(v)
 
 class CallRequest(BaseModel):
-    phone_number: str
-    reason: str = "Llamada desde HUD"
+    phone_number: str = Field(..., max_length=25)
+    reason: str = Field(default="Llamada desde HUD", max_length=100)
 
 class ReminderRequest(BaseModel):
-    title: str
-    time_iso: str
+    title: str = Field(..., max_length=150)
+    time_iso: str = Field(..., max_length=40)
     is_alarm: bool = False
 
 class MemoryRequest(BaseModel):
-    category: str
-    key_concept: str
-    content: str
+    category: str = Field(..., max_length=40)
+    key_concept: str = Field(..., max_length=80)
+    content: str = Field(..., max_length=1500)
 
 class ModelSwitchRequest(BaseModel):
-    model_id: str
+    model_id: str = Field(..., max_length=80)
 
 class SettingsUpdateRequest(BaseModel):
     gemini_api_key: Optional[str] = None
@@ -127,14 +172,11 @@ class SettingsUpdateRequest(BaseModel):
     zoho_email: Optional[str] = None
     zoho_password: Optional[str] = None
     sip_provider: Optional[str] = None
-    sip_username: Optional[str] = None
-    sip_password: Optional[str] = None
     default_city: Optional[str] = None
 
 
-# Dependencia de Autenticación
+# Dependencia de Autenticación Centralizada (Anti-IDOR)
 def get_current_user(session_token: Optional[str] = Cookie(default=None), request: Request = None):
-    # Buscar en Cookie o en Header Authorization
     token = session_token
     if not token and request:
         auth_header = request.headers.get("Authorization")
@@ -142,7 +184,7 @@ def get_current_user(session_token: Optional[str] = Cookie(default=None), reques
             token = auth_header.split(" ")[1]
 
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No autenticado")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Autenticación requerida")
 
     payload = auth_mgr.validate_session(token)
     if not payload:
@@ -152,12 +194,15 @@ def get_current_user(session_token: Optional[str] = Cookie(default=None), reques
 
 # --- RUTAS DE AUTENTICACIÓN ---
 @app.post("/api/auth/login")
-async def api_login(req: LoginRequest, response: Response):
+async def api_login(req: LoginRequest, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    if not auth_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Demasiados intentos de acceso. Bloqueo temporal por 60 segundos.")
+
     token = auth_mgr.authenticate(req.email, req.password)
     if not token:
-        raise HTTPException(status_code=400, detail="Credenciales incorrectas")
+        raise HTTPException(status_code=400, detail="Credenciales no autorizadas")
 
-    # Set HTTP-Only secure session cookie
     response.set_cookie(
         key="session_token",
         value=token,
@@ -177,7 +222,7 @@ async def api_auth_me(user: dict = Depends(get_current_user)):
     return {"authenticated": True, "user": user}
 
 
-# --- RUTAS PRINCIPALES DEL HUD ---
+# --- RUTAS PRINCIPALES DEL HUD (PROTEGIDAS CONTRA IDOR) ---
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
     return templates.TemplateResponse("hud.html", {"request": request, "title": "V.I.E.R.N.E.S. Stark HUD 2.0"})
@@ -187,60 +232,60 @@ async def get_system_status():
     return SystemTelemetry.get_full_status()
 
 @app.get("/api/devices")
-async def get_devices():
+async def get_devices(user: dict = Depends(get_current_user)):
     return list(device_mgr.devices.values())
 
 @app.post("/api/scan")
-async def trigger_network_scan():
+async def trigger_network_scan(user: dict = Depends(get_current_user)):
     devices = await device_mgr.scan_and_update()
     return {"success": True, "count": len(devices), "devices": devices}
 
 @app.post("/api/wol")
-async def trigger_wol(req: WolRequest):
+async def trigger_wol(req: WolRequest, user: dict = Depends(get_current_user)):
     return await device_mgr.execute_turn_on(req.target)
 
 @app.post("/api/lights")
-async def trigger_lights(req: LightRequest):
+async def trigger_lights(req: LightRequest, user: dict = Depends(get_current_user)):
     return await device_mgr.execute_control_light(req.target, req.action, req.brightness)
 
 @app.get("/api/emails")
-async def get_emails():
+async def get_emails(user: dict = Depends(get_current_user)):
     gmail = await gmail_client.get_unread_emails(max_results=5, only_important=True)
     zoho = zoho_client.get_unread_emails(max_results=5, only_important=True)
     return {"gmail": gmail, "zoho": zoho, "total": len(gmail) + len(zoho)}
 
 @app.get("/api/github")
-async def get_github_prs():
+async def get_github_prs(user: dict = Depends(get_current_user)):
     return await github_monitor.get_pull_requests_summary()
 
 @app.get("/api/telephony")
-async def get_telephony_status():
+async def get_telephony_status(user: dict = Depends(get_current_user)):
     return sip_mgr.get_telephony_status()
 
 @app.post("/api/call")
-async def make_call(req: CallRequest):
+async def make_call(req: CallRequest, user: dict = Depends(get_current_user)):
     return await sip_mgr.originate_call(req.phone_number)
 
 @app.get("/api/reminders")
-async def get_reminders():
+async def get_reminders(user: dict = Depends(get_current_user)):
     return await reminder_engine.get_active_reminders()
 
 @app.post("/api/reminders")
-async def create_reminder(req: ReminderRequest):
+async def create_reminder(req: ReminderRequest, user: dict = Depends(get_current_user)):
     return await reminder_engine.add_reminder(req.title, req.time_iso, req.is_alarm)
 
 @app.post("/api/prompt")
-async def send_prompt(req: PromptRequest):
+async def send_prompt(req: PromptRequest, user: dict = Depends(get_current_user)):
     response_text = await gemini_client.send_text_prompt(req.prompt)
     return {"success": True, "response": response_text}
 
 @app.post("/api/wakeword/trigger")
-async def trigger_voice():
+async def trigger_voice(user: dict = Depends(get_current_user)):
     wakeword_detector.trigger_manually()
     return {"success": True, "message": "V.I.E.R.N.E.S. activada."}
 
 
-# --- NUEVAS RUTAS: NOTICIAS, CLIMA, MODELOS, MEMORIA & CONFIGURACIÓN ---
+# --- RUTAS DE SERVICIOS (CLIMA, NOTICIAS, MODELOS Y VECTOR RAG) ---
 @app.get("/api/news")
 async def get_chile_news_api():
     news = await chile_news.get_top_news(limit=6)
@@ -251,26 +296,25 @@ async def get_weather_api(city: str = "santiago"):
     return await weather_engine.get_forecast(city)
 
 @app.get("/api/models")
-async def get_gemini_models_api():
+async def get_gemini_models_api(user: dict = Depends(get_current_user)):
     models = await models_manager.list_available_models()
     return {"models": models, "active_model": models_manager.active_model}
 
 @app.post("/api/models/active")
-async def set_gemini_active_model(req: ModelSwitchRequest):
+async def set_gemini_active_model(req: ModelSwitchRequest, user: dict = Depends(get_current_user)):
     return models_manager.set_active_model(req.model_id)
 
 @app.get("/api/memory")
-async def get_memories_api():
-    memories = await personal_rag.get_all_memories()
+async def get_memories_api(user: dict = Depends(get_current_user)):
+    memories = await vector_rag.get_all_vector_memories()
     return {"memories": memories, "count": len(memories)}
 
 @app.post("/api/memory")
-async def add_memory_api(req: MemoryRequest):
-    return await personal_rag.store_memory(req.category, req.key_concept, req.content)
+async def add_memory_api(req: MemoryRequest, user: dict = Depends(get_current_user)):
+    return await vector_rag.insert_memory(req.category, req.key_concept, req.content, source="user_hud")
 
 @app.get("/api/settings")
 async def get_settings_api(user: dict = Depends(get_current_user)):
-    """Retorna las variables configuradas de forma segura (con llaves parcialmente enmascaradas)."""
     raw_key = os.getenv("GEMINI_API_KEY", "")
     masked_key = raw_key[:6] + "..." + raw_key[-4:] if len(raw_key) > 10 else ""
 
@@ -292,7 +336,6 @@ async def get_settings_api(user: dict = Depends(get_current_user)):
 
 @app.post("/api/settings")
 async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(get_current_user)):
-    """Actualiza variables de configuración en memoria y en el archivo .env de forma persistente."""
     updates = {}
     if req.gemini_api_key and not req.gemini_api_key.startswith("AIzaSy..."):
         os.environ["GEMINI_API_KEY"] = req.gemini_api_key
@@ -328,7 +371,7 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
         sip_mgr.provider_name = req.sip_provider
         updates["SIP_PROVIDER"] = f'"{req.sip_provider}"'
 
-    # Escribir o actualizar en .env
+    # Escribir en .env
     if os.path.exists(ENV_PATH) and updates:
         try:
             with open(ENV_PATH, "r", encoding="utf-8") as f:
@@ -353,7 +396,6 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
 
             with open(ENV_PATH, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
-
             logger.info("Archivo .env actualizado exitosamente desde el Dashboard.")
         except Exception as e:
             logger.error(f"Error escribiendo en .env: {e}")
@@ -361,9 +403,16 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
     return {"success": True, "message": "Configuraciones actualizadas y guardadas en .env."}
 
 
-# --- WEBSOCKET DE TELEMETRÍA Y AUDIO WAVEFORM ---
+# --- WEBSOCKET BLINDADO (Anti-WebRTC / WebSocket Hijacking) ---
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
+    # Validar autenticación de handshake en WebSocket
+    auth_token = token or websocket.cookies.get("session_token")
+    if not auth_token or not auth_mgr.validate_session(auth_token):
+        # Rechazo de conexión no autorizada
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await ws_manager.connect(websocket)
     try:
         while True:
@@ -377,7 +426,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "type": "telemetry",
                 "data": telemetry
             })
-            await asyncio.sleep(0.1) # 10 Hz refresh
+            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception as e:

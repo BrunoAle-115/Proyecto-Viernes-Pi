@@ -1,6 +1,6 @@
 """
 Utilidades Criptográficas y de Seguridad para V.I.E.R.N.E.S.
-Implementa PBKDF2 SHA-256 (600,000 iteraciones) y firmado seguro de tokens de sesión.
+Implementa PBKDF2 SHA-256 (600,000 iteraciones), tokens HMAC, Rate Limiting y Sanitización.
 """
 
 import os
@@ -10,7 +10,10 @@ import secrets
 import json
 import base64
 import time
+import re
+import html
 from typing import Tuple, Dict, Any, Optional
+from collections import defaultdict
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 SECRET_KEY_FILE = os.path.join(DATA_DIR, "auth_secret.key")
@@ -36,7 +39,6 @@ def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     iterations = 600000
     key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    # Formato: pbkdf2_sha256$iterations$salt_hex$key_hex
     return f"pbkdf2_sha256${iterations}${salt.hex()}${key.hex()}"
 
 
@@ -77,7 +79,6 @@ def verify_session_token(token: str) -> Optional[Dict[str, Any]]:
         if not hmac.compare_digest(expected_sig, signature):
             return None
 
-        # Rellenar padding base64
         padded = payload_b64 + "=" * (-len(payload_b64) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
 
@@ -87,3 +88,48 @@ def verify_session_token(token: str) -> Optional[Dict[str, Any]]:
         return payload
     except Exception:
         return None
+
+
+# --- RATE LIMITER EN MEMORIA (Protección contra Brute Force / DDoS) ---
+class InMemoryRateLimiter:
+    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(list)
+
+    def is_allowed(self, client_ip: str) -> bool:
+        now = time.time()
+        # Limpiar registros antiguos
+        self.requests[client_ip] = [t for t in self.requests[client_ip] if now - t < self.window_seconds]
+        if len(self.requests[client_ip]) >= self.max_requests:
+            return False
+        self.requests[client_ip].append(now)
+        return True
+
+
+rate_limiter = InMemoryRateLimiter(max_requests=120, window_seconds=60)
+auth_rate_limiter = InMemoryRateLimiter(max_requests=10, window_seconds=60) # 10 intentos de login por minuto
+
+
+# --- SANITIZACIÓN DE ENTRADAS (Anti-XSS / Injection) ---
+def sanitize_text(text: str) -> str:
+    """Escapa caracteres peligrosos para mitigar XSS almacenado."""
+    if not text:
+        return ""
+    return html.escape(text.strip())
+
+
+def sanitize_ip_or_mac(target: str) -> str:
+    """Valida y sanea direcciones IP o MAC para prevenir inyecciones de comandos."""
+    clean = target.strip()
+    # IPv4 regex
+    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", clean):
+        parts = clean.split(".")
+        if all(0 <= int(p) <= 255 for p in parts):
+            return clean
+    # MAC regex
+    if re.match(r"^([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})$", clean):
+        return clean.replace("-", ":").lower()
+    # Alias alfanumérico seguro (letras, números, guiones, espacios)
+    clean_alias = re.sub(r"[^a-zA-Z0-9_\-\. ]", "", clean)
+    return clean_alias[:50]

@@ -240,14 +240,16 @@ class ToolsDispatcher:
                 return {"success": True, "weather": weather, "voice_summary": voice_summary}
 
             elif name == "store_personal_memory":
+                from viernes.memory.vector_rag import vector_rag
                 cat = args.get("category", "note")
                 key = args.get("key_concept", "nota_general")
                 content = args.get("content", "")
-                return await personal_rag.store_memory(category=cat, key_concept=key, content=content)
+                return await vector_rag.insert_memory(category=cat, key_concept=key, content=content, source="tool_invocation")
 
             elif name == "recall_personal_memory":
+                from viernes.memory.vector_rag import vector_rag
                 query = args.get("query", "")
-                memories = await personal_rag.recall_memories(query=query)
+                memories = await vector_rag.query_semantic_search(query=query, top_k=3)
                 return {"success": True, "count": len(memories), "memories": memories}
 
             elif name == "scan_local_network":

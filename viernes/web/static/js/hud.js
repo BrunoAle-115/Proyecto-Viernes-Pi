@@ -1,6 +1,15 @@
 /**
- * V.I.E.R.N.E.S. 2.0 - STARK INDUSTRIES HUD JAVASCRIPT CONTROLLER
+ * V.I.E.R.N.E.S. 2.0 - STARK INDUSTRIES HUD JAVASCRIPT CONTROLLER (SECURITY HARDENED)
+ * Anti-XSS, Secure Authenticated WebSockets, Vector RAG Interface.
  */
+
+// Utility: Anti-XSS HTML Sanitizer
+function escapeHtml(str) {
+  if (!str) return "";
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   // Elements
@@ -58,6 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let currentAudioRms = 0.05;
   let isSpeaking = false;
+  let authToken = "";
 
   // 1. Clock
   function updateClock() {
@@ -119,13 +129,27 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   drawWaveform();
 
+  // Helper fetch with Auth Headers & 401 handling
+  async function secureFetch(url, options = {}) {
+    options.headers = options.headers || {};
+    if (authToken) {
+      options.headers["Authorization"] = `Bearer ${authToken}`;
+    }
+    const res = await fetch(url, options);
+    if (res.status === 401) {
+      authOverlay.style.display = "flex";
+    }
+    return res;
+  }
+
   // 3. Authentication Check
   async function checkAuth() {
     try {
-      const res = await fetch("/api/auth/me");
+      const res = await secureFetch("/api/auth/me");
       if (res.ok) {
         authOverlay.style.display = "none";
         loadAllData();
+        connectWs();
       } else {
         authOverlay.style.display = "flex";
       }
@@ -148,9 +172,11 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const data = await res.json();
       if (res.ok) {
+        authToken = data.token;
         authOverlay.style.display = "none";
-        appendLog("AUTH", `Bienvenido señor Bruno (${email}). Acceso táctico concedido.`, "log-success");
+        appendLog("AUTH", `Bienvenido señor Bruno (${escapeHtml(email)}). Acceso táctico concedido.`, "log-success");
         loadAllData();
+        connectWs();
       } else {
         authErrorMsg.textContent = data.detail || "Contraseña o correo incorrectos.";
       }
@@ -165,14 +191,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnLogout.addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });
+    authToken = "";
     authOverlay.style.display = "flex";
+    if (ws) ws.close();
   });
 
   // 4. Settings Modal (.env live updates)
   btnOpenSettings.addEventListener("click", async () => {
     settingsOverlay.style.display = "flex";
     try {
-      const res = await fetch("/api/settings");
+      const res = await secureFetch("/api/settings");
       if (res.ok) {
         const s = await res.json();
         cfgGeminiKey.value = s.gemini_api_key_masked || "";
@@ -202,7 +230,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     try {
-      const res = await fetch("/api/settings", {
+      const res = await secureFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -220,12 +248,12 @@ document.addEventListener("DOMContentLoaded", () => {
   async function loadWeather() {
     try {
       const city = cfgCity ? cfgCity.value : "santiago";
-      const res = await fetch(`/api/weather?city=${city}`);
+      const res = await fetch(`/api/weather?city=${encodeURIComponent(city)}`);
       const w = await res.json();
 
       weatherTemp.textContent = `${w.current_temp}°C`;
-      weatherCity.textContent = `${w.city}, Chile`;
-      weatherCond.textContent = w.condition;
+      weatherCity.textContent = `${escapeHtml(w.city)}, Chile`;
+      weatherCond.textContent = escapeHtml(w.condition);
       weatherApparent.textContent = `${w.apparent_temp}°C`;
       weatherHumidity.textContent = `${w.humidity}%`;
 
@@ -243,9 +271,9 @@ document.addEventListener("DOMContentLoaded", () => {
           const chip = document.createElement("div");
           chip.className = "hourly-chip";
           chip.innerHTML = `
-            <div>${h.time}</div>
-            <div style="font-weight:700; color:#fff;">${h.temperature}°</div>
-            <div class="hourly-chip-rain">☔ ${h.rain_prob}%</div>
+            <div>${escapeHtml(h.time)}</div>
+            <div style="font-weight:700; color:#fff;">${escapeHtml(String(h.temperature))}°</div>
+            <div class="hourly-chip-rain">☔ ${escapeHtml(String(h.rain_prob))}%</div>
           `;
           hourlyForecast.appendChild(chip);
         });
@@ -272,10 +300,10 @@ document.addEventListener("DOMContentLoaded", () => {
         item.className = "news-item";
         item.innerHTML = `
           <div class="news-header">
-            <span>${n.source}</span>
-            <span>${n.pub_date ? n.pub_date.slice(0, 16) : 'Hoy'}</span>
+            <span>${escapeHtml(n.source)}</span>
+            <span>${escapeHtml(n.pub_date ? n.pub_date.slice(0, 16) : 'Hoy')}</span>
           </div>
-          <div class="news-title">${n.title}</div>
+          <div class="news-title">${escapeHtml(n.title)}</div>
         `;
         newsList.appendChild(item);
       });
@@ -284,15 +312,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 7. Load Mini-RAG Personal Memory & Routines
+  // 7. Load Vector RAG Personal Memory & Routines
   async function loadMemory() {
     try {
-      const res = await fetch("/api/memory");
+      const res = await secureFetch("/api/memory");
       const data = await res.json();
       memoryList.innerHTML = "";
 
       if (!data.memories || data.memories.length === 0) {
-        memoryList.innerHTML = '<div class="empty-notice">No hay recuerdos registrados en el Mini-RAG.</div>';
+        memoryList.innerHTML = '<div class="empty-notice">No hay recuerdos registrados en el Vector RAG.</div>';
         return;
       }
 
@@ -301,22 +329,22 @@ document.addEventListener("DOMContentLoaded", () => {
         item.className = "memory-item";
         item.innerHTML = `
           <div style="display:flex; justify-content:space-between;">
-            <span class="memory-concept">// ${m.key_concept.toUpperCase()}</span>
-            <span class="badge-approved" style="font-size:9px;">${m.category.toUpperCase()}</span>
+            <span class="memory-concept">// ${escapeHtml(m.key_concept.toUpperCase())}</span>
+            <span class="badge-approved" style="font-size:9px;">${escapeHtml(m.category.toUpperCase())}</span>
           </div>
-          <div style="color:var(--text-main); margin-top:3px;">${m.content}</div>
+          <div style="color:var(--text-main); margin-top:3px;">${escapeHtml(m.content)}</div>
         `;
         memoryList.appendChild(item);
       });
     } catch (e) {
-      console.error("Error cargando memoria", e);
+      console.error("Error cargando memoria vectorial", e);
     }
   }
 
   // 8. Load Discovered Devices Matrix
   async function loadDevices() {
     try {
-      const res = await fetch("/api/devices");
+      const res = await secureFetch("/api/devices");
       const devices = await res.json();
       deviceMatrix.innerHTML = "";
 
@@ -328,15 +356,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         let actionBtn = "";
         if (dev.wol_enabled || dev.type === "desktop") {
-          actionBtn = `<button class="btn-wol" onclick="triggerWol('${dev.ip}')">ENCENDER WOL</button>`;
+          actionBtn = `<button class="btn-wol" onclick="triggerWol('${escapeHtml(dev.ip)}')">ENCENDER WOL</button>`;
         } else if (dev.type === "light") {
-          actionBtn = `<button class="btn-light-toggle" onclick="toggleLight('${dev.ip}')">LUCES ON/OFF</button>`;
+          actionBtn = `<button class="btn-light-toggle" onclick="toggleLight('${escapeHtml(dev.ip)}')">LUCES ON/OFF</button>`;
         }
 
         card.innerHTML = `
           <div class="device-info">
-            <div class="device-name">${dev.alias} ${statusBadge}</div>
-            <div class="device-sub">IP: ${dev.ip} | MAC: ${dev.mac || "Auto-Resolv"} | ${dev.vendor || "IoT"}</div>
+            <div class="device-name">${escapeHtml(dev.alias)} ${statusBadge}</div>
+            <div class="device-sub">IP: ${escapeHtml(dev.ip)} | MAC: ${escapeHtml(dev.mac || "Auto-Resolv")} | ${escapeHtml(dev.vendor || "IoT")}</div>
           </div>
           <div>${actionBtn}</div>
         `;
@@ -350,7 +378,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // 9. Load Triaged Emails & GitHub PRs
   async function loadEmails() {
     try {
-      const res = await fetch("/api/emails");
+      const res = await secureFetch("/api/emails");
       const data = await res.json();
       emailList.innerHTML = "";
       const all = [...(data.gmail || []), ...(data.zoho || [])];
@@ -366,11 +394,11 @@ document.addEventListener("DOMContentLoaded", () => {
         item.className = "mail-item";
         item.innerHTML = `
           <div style="display:flex; justify-content:space-between;">
-            <span style="color:var(--cyan-stark); font-weight:700;">${m.source}: ${m.sender.split("<")[0]}</span>
+            <span style="color:var(--cyan-stark); font-weight:700;">${escapeHtml(m.source)}: ${escapeHtml(m.sender.split("<")[0])}</span>
             <span class="badge-urgent">URGENTE</span>
           </div>
-          <div style="color:#fff; font-weight:600;">${m.subject}</div>
-          <div style="font-size:11px; color:var(--text-dim);">${m.snippet}</div>
+          <div style="color:#fff; font-weight:600;">${escapeHtml(m.subject)}</div>
+          <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(m.snippet)}</div>
         `;
         emailList.appendChild(item);
       });
@@ -379,7 +407,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function loadGithub() {
     try {
-      const res = await fetch("/api/github");
+      const res = await secureFetch("/api/github");
       const data = await res.json();
       githubList.innerHTML = "";
 
@@ -392,16 +420,16 @@ document.addEventListener("DOMContentLoaded", () => {
         const item = document.createElement("div");
         item.className = "pr-item";
         const isApproved = pr.status === "APPROVED";
-        const badge = isApproved ? '<span class="badge-approved">✓ APROBADA</span>' : `<span class="header-badge">${pr.status}</span>`;
+        const badge = isApproved ? '<span class="badge-approved">✓ APROBADA</span>' : `<span class="header-badge">${escapeHtml(pr.status)}</span>`;
 
         item.innerHTML = `
           <div style="display:flex; justify-content:space-between;">
-            <span style="color:var(--cyan-stark); font-weight:700;">${pr.repo} #${pr.number}</span>
+            <span style="color:var(--cyan-stark); font-weight:700;">${escapeHtml(pr.repo)} #${pr.number}</span>
             ${badge}
           </div>
-          <div style="color:#fff;">${pr.title}</div>
+          <div style="color:#fff;">${escapeHtml(pr.title)}</div>
           <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">
-            ${isApproved ? 'Aprobada por: ' + pr.approved_by.join(', ') : 'Revisión pendiente'}
+            ${isApproved ? 'Aprobada por: ' + escapeHtml(pr.approved_by.join(', ')) : 'Revisión pendiente'}
           </div>
         `;
         githubList.appendChild(item);
@@ -418,11 +446,13 @@ document.addEventListener("DOMContentLoaded", () => {
     loadGithub();
   }
 
-  // 10. WebSocket Telemetry Stream
+  // 10. Authenticated WebSocket Telemetry Stream (Anti-Hijacking)
   let ws;
   function connectWs() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const tokenQuery = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
+    ws = new WebSocket(`${protocol}//${window.location.host}/ws${tokenQuery}`);
 
     ws.onmessage = (event) => {
       try {
@@ -432,7 +462,7 @@ document.addEventListener("DOMContentLoaded", () => {
           cpuTemp.textContent = `${t.cpu.temperature_c}°C`;
           cpuLoad.textContent = `${Math.round(t.cpu.percent)}%`;
           ramUsage.textContent = `${Math.round(t.ram.percent)}%`;
-          hostIp.textContent = `IP: ${t.local_ip}`;
+          hostIp.textContent = `IP: ${escapeHtml(t.local_ip)}`;
           currentAudioRms = t.audio_rms || 0.02;
           isSpeaking = t.is_speaking || false;
 
@@ -449,14 +479,16 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (err) {}
     };
 
-    ws.onclose = () => setTimeout(connectWs, 2000);
+    ws.onclose = () => {
+      // Reintentar solo si está autenticado
+      if (authToken) setTimeout(connectWs, 3000);
+    };
   }
-  connectWs();
 
   function appendLog(topic, text, typeClass = "log-system") {
     const entry = document.createElement("div");
     entry.className = `log-entry ${typeClass}`;
-    entry.textContent = `[${topic.toUpperCase()}] ${text}`;
+    entry.textContent = `[${escapeHtml(topic.toUpperCase())}] ${text}`;
     termLogs.appendChild(entry);
     termLogs.scrollTop = termLogs.scrollHeight;
   }
@@ -464,7 +496,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Handlers & Actions
   window.triggerWol = async (target) => {
     appendLog("WOL", `Transmitiendo Magic Packet a ${target}...`, "log-info");
-    const res = await fetch("/api/wol", {
+    const res = await secureFetch("/api/wol", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target })
@@ -475,7 +507,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   window.toggleLight = async (target) => {
-    const res = await fetch("/api/lights", {
+    const res = await secureFetch("/api/lights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target, action: "toggle" })
@@ -490,13 +522,14 @@ document.addEventListener("DOMContentLoaded", () => {
     promptInput.value = "";
     appendLog("BRUNO", text, "log-info");
 
-    const res = await fetch("/api/prompt", {
+    const res = await secureFetch("/api/prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: text })
     });
     const data = await res.json();
     appendLog("VIERNES", data.response, "log-system");
+    loadMemory(); // Actualizar recuerdos si se auto-alimentó la DB vectorial
   });
 
   promptInput.addEventListener("keydown", (e) => {
@@ -505,12 +538,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   btnTalkMic.addEventListener("click", async () => {
     appendLog("VOZ", "Reconocimiento de voz activo. Puedes hablar ahora.", "log-info");
-    await fetch("/api/wakeword/trigger", { method: "POST" });
+    await secureFetch("/api/wakeword/trigger", { method: "POST" });
   });
 
   btnRescanNet.addEventListener("click", async () => {
     appendLog("RED", "Escaneando subred local con ARP...", "log-info");
-    await fetch("/api/scan", { method: "POST" });
+    await secureFetch("/api/scan", { method: "POST" });
     await loadDevices();
   });
 
@@ -518,7 +551,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const num = phoneInput.value.trim();
     if (!num) return;
     appendLog("SIP", `Marcando a celular ${num}...`, "log-info");
-    const res = await fetch("/api/call", {
+    const res = await secureFetch("/api/call", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone_number: num })
@@ -533,12 +566,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const content = prompt(`Detalle a recordar para '${concept}':`);
     if (!content) return;
 
-    await fetch("/api/memory", {
+    await secureFetch("/api/memory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ category: "routine", key_concept: concept, content })
     });
-    appendLog("MEMORIA", `Nueva rutina guardada en Mini-RAG: ${concept}`, "log-success");
+    appendLog("MEMORIA", `Nueva rutina vectorizada en RAG: ${concept}`, "log-success");
     loadMemory();
   });
 });

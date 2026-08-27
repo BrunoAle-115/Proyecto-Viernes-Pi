@@ -196,15 +196,34 @@ class GeminiLiveClient:
             logger.debug(f"Error enviando audio a Gemini Live: {e}")
 
     async def send_text_prompt(self, prompt: str) -> str:
-        """Permite enviar comandos de texto directo a través del Dashboard HUD."""
+        """Permite enviar comandos de texto directo a través del Dashboard HUD con Vector RAG."""
+        from viernes.memory.vector_rag import vector_rag, AutoMemoryFeeder
+
         logger.info(f"Usuario (HUD): {prompt}")
         await bus.publish("user/text_prompt", {"text": prompt}, sender="hud")
 
-        # Ejecución inteligente vía ToolsDispatcher si coincide con comandos directos
+        # 1. Auto-feed de memoria en segundo plano
+        asyncio.create_task(AutoMemoryFeeder.analyze_and_auto_feed(prompt))
+
+        # 2. Recuperación semántica de recuerdos vectoriales relevantes
+        relevant_memories = await vector_rag.query_semantic_search(prompt, top_k=2)
+        context_hint = ""
+        if relevant_memories:
+            context_hint = " [Contexto RAG: " + "; ".join([m["content"] for m in relevant_memories]) + "]"
+
+        # 3. Ejecución inteligente vía ToolsDispatcher si coincide con comandos directos
         prompt_low = prompt.lower()
         if "enciende" in prompt_low and ("pc" in prompt_low or "computador" in prompt_low or "tarro" in prompt_low):
             res = await ToolsDispatcher.execute_tool("turn_on_pc", {"device_name": "pc_principal"})
             return res.get("message", "Comando WoL enviado.")
+
+        if "noticia" in prompt_low or "noticias" in prompt_low or "titular" in prompt_low:
+            res = await ToolsDispatcher.execute_tool("get_chile_news", {"limit": 3})
+            return res.get("voice_summary", "Noticias de Chile obtenidas.")
+
+        if "clima" in prompt_low or "temperatura" in prompt_low or "lluvia" in prompt_low or "llover" in prompt_low:
+            res = await ToolsDispatcher.execute_tool("get_weather_forecast", {"city": "santiago"})
+            return res.get("voice_summary", "Pronóstico del clima obtenido.")
 
         if "correo" in prompt_low or "email" in prompt_low:
             res = await ToolsDispatcher.execute_tool("get_important_emails", {"source": "all"})
@@ -218,7 +237,15 @@ class GeminiLiveClient:
             res = await ToolsDispatcher.execute_tool("scan_local_network", {})
             return f"Escaneo completado. Se encontraron {res.get('count', 0)} dispositivos."
 
-        return f"Comando '{prompt}' procesado por V.I.E.R.N.E.S."
+        if "recuerda" in prompt_low or "guarda" in prompt_low:
+            res = await ToolsDispatcher.execute_tool("store_personal_memory", {
+                "category": "note",
+                "key_concept": f"nota_{int(asyncio.get_event_loop().time()) % 10000}",
+                "content": prompt
+            })
+            return res.get("message", "Recuerdo almacenado en la base de datos vectorial.")
+
+        return f"Comando procesado por V.I.E.R.N.E.S.{context_hint}"
 
     async def close(self):
         """Cierra la conexión de forma limpia."""

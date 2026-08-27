@@ -1,0 +1,141 @@
+"""
+Tests de Seguridad Avanzada y Motor Vector RAG para V.I.E.R.N.E.S. 2.0.
+Verifica:
+- Base de datos vectorial (768 dimensiones) y similitud de coseno
+- Auto-alimentación autónoma de recuerdos (AutoMemoryFeeder)
+- Protección anti-IDOR en endpoints protegidos
+- Sanitización de entradas (Anti-XSS / Command Injection)
+- Configuración de transporte SIP TLS (puertos 5060 y 5061) y mitigación de SIP Hacking
+"""
+
+import sys
+import tempfile
+import shutil
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pytest
+import asyncio
+import numpy as np
+from fastapi.testclient import TestClient
+
+from viernes.memory.vector_rag import VectorDatabaseRAG, VectorEmbeddingService, AutoMemoryFeeder
+from viernes.auth.security import sanitize_text, sanitize_ip_or_mac, rate_limiter, auth_rate_limiter
+from viernes.web.server import app
+
+
+def test_vector_embedding_and_cosine_similarity():
+    temp_dir = tempfile.mkdtemp()
+    test_db = str(Path(temp_dir) / "test_vector.db")
+
+    try:
+        rag = VectorDatabaseRAG(db_path=test_db)
+
+        # 1. Verificar dimensiones del embedding
+        vec1 = VectorEmbeddingService.get_embedding("Mi computador de juegos es un Ryzen 9")
+        assert vec1.shape == (768,)
+        assert np.isclose(np.linalg.norm(vec1), 1.0, atol=1e-3)
+
+        # 2. Insertar memoria vectorial
+        async def _run_rag():
+            await rag.insert_memory(
+                category="habit",
+                key_concept="computador_principal",
+                content="Bruno trabaja en su PC Gamer Ryzen con IP 192.168.1.150.",
+                source="test"
+            )
+            await rag.insert_memory(
+                category="routine",
+                key_concept="ejercicio_gym",
+                content="Bruno va al gimnasio a entrenar pecho y espalda los martes.",
+                source="test"
+            )
+
+            # 3. Búsqueda semántica usando similitud de coseno
+            results_pc = await rag.query_semantic_search("computador principal de Bruno", top_k=1)
+            assert len(results_pc) >= 1
+            assert "PC Gamer" in results_pc[0]["content"]
+
+            results_gym = await rag.query_semantic_search("rutina gimnasio ejercicio", top_k=1)
+            assert len(results_gym) >= 1
+            assert "gimnasio" in results_gym[0]["content"]
+
+        asyncio.run(_run_rag())
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_auto_memory_feeder():
+    async def _test_autofeed():
+        temp_dir = tempfile.mkdtemp()
+        test_db = str(Path(temp_dir) / "test_auto_vector.db")
+        try:
+            from viernes.memory import vector_rag as vr_module
+            old_rag = vr_module.vector_rag
+            vr_module.vector_rag = VectorDatabaseRAG(db_path=test_db)
+
+            # Simular que el usuario habla sobre un hábito
+            await AutoMemoryFeeder.analyze_and_auto_feed("Normalmente me gusta tomar café cortado por las tardes")
+
+            # Verificar si se indexó automáticamente
+            memories = await vr_module.vector_rag.get_all_vector_memories()
+            assert any("café cortado" in m["content"] for m in memories)
+
+            vr_module.vector_rag = old_rag
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    asyncio.run(_test_autofeed())
+
+
+def test_sanitization_and_anti_xss():
+    # Sanitización de texto peligroso (XSS)
+    malicious_script = "<script>alert('XSS_ATTACK');</script>"
+    safe_text = sanitize_text(malicious_script)
+    assert "<script>" not in safe_text
+    assert "&lt;script&gt;" in safe_text
+
+    # Sanitización de IPs para evitar Command Injection
+    clean_ip = sanitize_ip_or_mac("192.168.1.150; rm -rf /")
+    assert ";" not in clean_ip
+    assert clean_ip == "192.168.1.150 rm -rf " # Caracteres peligrosos removidos
+
+    valid_mac = sanitize_ip_or_mac("AA-BB-CC-DD-EE-FF")
+    assert valid_mac == "aa:bb:cc:dd:ee:ff"
+
+
+def test_api_security_and_idor_protection():
+    client = TestClient(app)
+
+    # 1. Petición no autenticada a endpoints protegidos debe responder 401 Unauthorized
+    res_devices = client.get("/api/devices")
+    assert res_devices.status_code == 401
+
+    res_wol = client.post("/api/wol", json={"target": "192.168.1.150"})
+    assert res_wol.status_code == 401
+
+    res_settings = client.get("/api/settings")
+    assert res_settings.status_code == 401
+
+    # 2. Verificar cabeceras de seguridad CSP y Anti-Clickjacking
+    res_home = client.get("/")
+    assert res_home.status_code == 200
+    assert "Content-Security-Policy" in res_home.headers
+    assert res_home.headers["X-Frame-Options"] == "DENY"
+    assert res_home.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_sip_tls_and_anti_hacking_config():
+    pjsip_path = Path(__file__).parent.parent / "telephony" / "config" / "asterisk" / "pjsip.conf"
+    assert pjsip_path.exists()
+    content = pjsip_path.read_text(encoding="utf-8")
+
+    # Verificar soporte de puerto 5060 (UDP/TCP) y 5061 (TLS / SIPS)
+    assert "bind=0.0.0.0:5060" in content
+    assert "bind=0.0.0.0:5061" in content
+    assert "protocol=tls" in content
+
+    # Verificar mitigaciones de SIP Hacking
+    assert "always_auth_reject=yes" in content
+    assert "media_encryption=sdes" in content
+    assert "allow_unauthenticated_options=no" in content
