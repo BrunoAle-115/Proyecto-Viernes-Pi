@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status, Response, Cookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field, validator
@@ -235,6 +235,13 @@ async def api_auth_me(user: dict = Depends(get_current_user)):
 
 
 # --- RUTAS PRINCIPALES DEL HUD (PROTEGIDAS CONTRA IDOR) ---
+@app.get("/favicon.ico", include_in_schema=False)
+async def get_favicon():
+    fav_path = os.path.join(STATIC_DIR, "favicon.svg")
+    if os.path.exists(fav_path):
+        return FileResponse(fav_path, media_type="image/svg+xml")
+    return Response(status_code=204)
+
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="hud.html", context={"title": "V.I.E.R.N.E.S. Stark HUD 2.0"})
