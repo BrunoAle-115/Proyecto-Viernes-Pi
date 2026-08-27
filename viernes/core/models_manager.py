@@ -257,7 +257,7 @@ class GeminiModelsManager:
         """
         Lista todos los modelos disponibles en Google AI Studio clasificados por capacidades.
         """
-        target_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        target_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
 
         # Si no hay key configurada o es un placeholder
         if not target_key or target_key.startswith("AIzaSyYour") or "..." in target_key:

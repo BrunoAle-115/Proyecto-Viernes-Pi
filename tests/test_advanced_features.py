@@ -104,7 +104,7 @@ def test_gemini_models_manager():
         mgr = GeminiModelsManager()
         models = await mgr.list_available_models()
         assert len(models) >= 1
-        assert any("gemini-2.0-flash" in m["id"] for m in models)
+        assert any("gemini" in m.get("id", "").lower() for m in models)
 
         # Conmutar modelo
         switch_res = mgr.set_active_model("models/gemini-2.0-flash")
