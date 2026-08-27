@@ -218,7 +218,9 @@ document.addEventListener("DOMContentLoaded", () => {
       options.headers["Authorization"] = `Bearer ${authToken}`;
     }
     const res = await fetch(url, options);
-    if (res.status === 401 && url === "/api/auth/me") {
+    if (res.status === 401) {
+      authToken = "";
+      localStorage.removeItem("viernes_auth_token");
       if (authOverlay) authOverlay.style.display = "flex";
     }
     return res;
@@ -233,9 +235,13 @@ document.addEventListener("DOMContentLoaded", () => {
         loadAllData();
         connectWs();
       } else {
+        authToken = "";
+        localStorage.removeItem("viernes_auth_token");
         if (authOverlay) authOverlay.style.display = "flex";
       }
     } catch (e) {
+      authToken = "";
+      localStorage.removeItem("viernes_auth_token");
       if (authOverlay) authOverlay.style.display = "flex";
     }
   }
@@ -266,6 +272,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email, password })
       });
       const data = await res.json();
@@ -277,7 +284,7 @@ document.addEventListener("DOMContentLoaded", () => {
         loadAllData();
         connectWs();
       } else {
-        if (errorEl) errorEl.textContent = data.detail || "Contraseña o correo no autorizados.";
+        if (errorEl) errorEl.textContent = data.detail || "Contraseña o correo no válidos.";
       }
     } catch (err) {
       if (errorEl) errorEl.textContent = "Error conectando con el servidor de autenticación.";
@@ -289,27 +296,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  if (btnLoginSubmit) {
-    btnLoginSubmit.addEventListener("click", (e) => {
-      e.preventDefault();
-      window.handleLoginSubmit();
-    });
-  }
-
-  if (loginPassword) {
-    loginPassword.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        window.handleLoginSubmit();
-      }
-    });
-  }
-
   btnLogout.addEventListener("click", async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    } catch (e) {}
     authToken = "";
     localStorage.removeItem("viernes_auth_token");
-    authOverlay.style.display = "flex";
+    if (authOverlay) authOverlay.style.display = "flex";
     if (ws) ws.close();
   });
 

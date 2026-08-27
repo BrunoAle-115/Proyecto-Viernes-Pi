@@ -647,9 +647,14 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
 # --- WEBSOCKET BLINDADO (Anti-WebRTC / WebSocket Hijacking) ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    # Validar autenticación de handshake en WebSocket
-    auth_token = token or websocket.cookies.get("session_token")
-    if not auth_token or not auth_mgr.validate_session(auth_token):
+    # Validar autenticación de handshake en WebSocket (Bearer query o Cookie)
+    auth_token = None
+    if token and auth_mgr.validate_session(token):
+        auth_token = token
+    elif websocket.cookies.get("session_token") and auth_mgr.validate_session(websocket.cookies.get("session_token")):
+        auth_token = websocket.cookies.get("session_token")
+
+    if not auth_token:
         # Rechazo de conexión no autorizada
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
