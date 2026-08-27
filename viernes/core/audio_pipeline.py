@@ -164,29 +164,43 @@ class UniversalAudioPipeline:
                             pass
                         self.audio_queue_in.put_nowait(pcm_data)
 
-            # Iniciar InputStream con el dispositivo detectado
-            self._in_stream = sd.InputStream(
-                device=self.input_device_id,
-                samplerate=self.sample_rate_in,
-                channels=self.channels,
-                dtype="float32",
-                callback=_in_callback,
-                blocksize=512, # ~32ms latencia ultra-baja
-            )
-            self._in_stream.start()
-            self.is_recording = True
-            wakeword_detector.is_active = True
-            logger.info("✓ Micrófono USB en línea: Ever-Listen y detección 'Oye Viernes' activos.")
-
-            # 2. Iniciar Worker de Reproducción en Parlante USB
-            self._playback_task = asyncio.create_task(self._playback_worker())
-
-            # 3. Iniciar Watchdog de Hot-Plug USB
-            if not self._watchdog_task or self._watchdog_task.done():
-                self._watchdog_task = asyncio.create_task(self._usb_hotplug_watchdog())
+            # Iniciar InputStream solo si hay un dispositivo físico de entrada válido
+            if self.input_device_id is not None:
+                self._in_stream = sd.InputStream(
+                    device=self.input_device_id,
+                    samplerate=self.sample_rate_in,
+                    channels=self.channels,
+                    dtype="float32",
+                    callback=_in_callback,
+                    blocksize=512, # ~32ms latencia ultra-baja
+                )
+                self._in_stream.start()
+                self.is_recording = True
+                wakeword_detector.is_active = True
+                logger.info("✓ Micrófono USB en línea: Ever-Listen y detección 'Oye Viernes' activos.")
+            else:
+                self.is_recording = False
+                logger.info("ℹ️ Sin micrófono USB físico en Pi 5. Interfaz de voz Web HUD y REST activas.")
 
         except Exception as e:
             logger.warning(f"No se pudo inicializar micrófono local de inmediato: {e}. El watchdog intentará auto-conectar cuando se enchufe.")
+
+        # 2. Iniciar Worker de Reproducción en Parlante USB si no está corriendo
+        if not self._playback_task or self._playback_task.done():
+            self._playback_task = asyncio.create_task(self._playback_worker())
+
+        # 3. Iniciar Watchdog de Hot-Plug USB SIEMPRE
+        if not self._watchdog_task or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._usb_hotplug_watchdog())
+
+    def interrupt_playback(self):
+        """Limpia el buffer de salida de audio ante interrupción del usuario (Barge-in)."""
+        while not self.audio_queue_out.empty():
+            try:
+                self.audio_queue_out.get_nowait()
+                self.audio_queue_out.task_done()
+            except Exception:
+                break
 
     async def _playback_worker(self):
         """Reproduce chunks PCM de 24kHz en hilo de PortAudio para no congelar asyncio."""

@@ -550,6 +550,38 @@ async def get_chile_news_api():
 async def get_weather_api(city: str = "santiago"):
     return await weather_engine.get_forecast(city)
 
+def _persist_env_updates(updates: Dict[str, str]):
+    """Guarda variables de configuración actualizadas en el archivo .env de forma segura."""
+    if not os.path.exists(ENV_PATH) or not updates:
+        return
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        new_lines = []
+        applied_keys = set()
+        for line in lines:
+            matched = False
+            for k, v in updates.items():
+                if line.strip().startswith(f"{k}="):
+                    new_lines.append(f"{k}={v}\n")
+                    applied_keys.add(k)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+
+        for k, v in updates.items():
+            if k not in applied_keys:
+                new_lines.append(f"{k}={v}\n")
+
+        with open(ENV_PATH, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        logger.info(f"Archivo .env actualizado exitosamente con: {list(updates.keys())}")
+    except Exception as e:
+        logger.error(f"Error escribiendo en .env: {e}")
+
+
 @app.get("/api/models")
 async def get_gemini_models_api(user: dict = Depends(get_current_user)):
     models = await models_manager.list_available_models()
@@ -557,7 +589,10 @@ async def get_gemini_models_api(user: dict = Depends(get_current_user)):
 
 @app.post("/api/models/active")
 async def set_gemini_active_model(req: ModelSwitchRequest, user: dict = Depends(get_current_user)):
-    return models_manager.set_active_model(req.model_id)
+    res = models_manager.set_active_model(req.model_id)
+    if res.get("success"):
+        _persist_env_updates({"GEMINI_MODEL": f'"{res["active_model"]}"'})
+    return res
 
 @app.get("/api/memory")
 async def get_memories_api(user: dict = Depends(get_current_user)):
@@ -664,34 +699,7 @@ async def update_settings_api(req: SettingsUpdateRequest, user: dict = Depends(g
         updates["GOOGLE_CLIENT_SECRET"] = f'"{req.google_client_secret.strip()}"'
 
     # Escribir en .env
-    if os.path.exists(ENV_PATH) and updates:
-        try:
-            with open(ENV_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            new_lines = []
-            applied_keys = set()
-            for line in lines:
-                matched = False
-                for k, v in updates.items():
-                    if line.strip().startswith(f"{k}="):
-                        new_lines.append(f"{k}={v}\n")
-                        applied_keys.add(k)
-                        matched = True
-                        break
-                if not matched:
-                    new_lines.append(line)
-
-            for k, v in updates.items():
-                if k not in applied_keys:
-                    new_lines.append(f"{k}={v}\n")
-
-            with open(ENV_PATH, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-            logger.info("Archivo .env actualizado exitosamente desde el Dashboard.")
-        except Exception as e:
-            logger.error(f"Error escribiendo en .env: {e}")
-
+    _persist_env_updates(updates)
     return {"success": True, "message": "Configuraciones actualizadas y guardadas en .env."}
 
 

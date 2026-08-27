@@ -130,6 +130,7 @@ class ViernesLiveClient:
 
             function_responses.append({
                 "id": call_id,
+                "name": name,
                 "response": {
                     "output": result
                 }

@@ -118,8 +118,7 @@ GEMINI_TOOLS_DECLARATIONS: List[Dict[str, Any]] = [
                     "type": "STRING",
                     "description": "Filtro de búsqueda específico (e.g. 'from:boss', 'subject:alerta', 'urgent')."
                 }
-            },
-            "required": []
+            }
         }
     },
     {

@@ -843,59 +843,117 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // --- SÍNTESIS DE VOZ PROCEDURAL Y WEB SPEECH API ---
-  function speakText(text) {
+  // =========================================================================
+  // --- MOTOR ROBUSTO DE VOZ Y SÍNTESIS DE AUDIO (HUD STARK INDUSTRIES) ---
+  // =========================================================================
+
+  // 1. GESTIÓN ROBUSTA DE VOCES (ASÍNCRONA + PREVENCIÓN GC)
+  let availableVoices = [];
+  let preferredSpanishVoice = null;
+  window._currentSpeechUtterance = null; // Previene Garbage Collection en Chrome/Edge
+
+  function initSpeechVoices() {
     if (!window.speechSynthesis) return;
+    availableVoices = window.speechSynthesis.getVoices() || [];
+    if (availableVoices.length > 0) {
+      preferredSpanishVoice =
+        availableVoices.find(v => v.lang === "es-CL") ||
+        availableVoices.find(v => v.lang === "es-419") ||
+        availableVoices.find(v => v.lang.startsWith("es") && (
+          v.name.includes("Female") || v.name.includes("Helena") ||
+          v.name.includes("Sabina") || v.name.includes("Google") ||
+          v.name.includes("Paulina") || v.name.includes("Monica") ||
+          v.name.includes("Natural")
+        )) ||
+        availableVoices.find(v => v.lang.startsWith("es")) ||
+        availableVoices[0] || null;
+    }
+  }
+
+  if (window.speechSynthesis) {
+    initSpeechVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = initSpeechVoices;
+    }
+  }
+
+  // 2. REPRODUCTOR DE VOZ (TTS) CON FEEDBACK EN HUD Y VISUALIZADOR
+  function speakText(text) {
+    if (!window.speechSynthesis || !text) return;
+
     try {
       window.speechSynthesis.cancel();
-      const cleanText = text.replace(/\[.*?\]/g, "").replace(/[*_#`]/g, "").trim();
+
+      // Limpiar markdown, corchetes y URLs para locución fluida
+      const cleanText = text
+        .replace(/\[.*?\]/g, "")
+        .replace(/[*_#`~>]/g, "")
+        .replace(/https?:\/\/\S+/g, "")
+        .trim();
+
       if (!cleanText) return;
 
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = "es-CL";
-      utterance.rate = 1.04;
-      utterance.pitch = 1.0;
+      if (!preferredSpanishVoice && availableVoices.length === 0) {
+        initSpeechVoices();
+      }
 
-      const voices = window.speechSynthesis.getVoices();
-      const spanishVoice = voices.find(v => (v.lang.includes("es") && (v.name.includes("Female") || v.name.includes("Helena") || v.name.includes("Sabina") || v.name.includes("Google") || v.name.includes("Paulina") || v.name.includes("Monica")))) || voices.find(v => v.lang.includes("es"));
-      if (spanishVoice) utterance.voice = spanishVoice;
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = preferredSpanishVoice ? preferredSpanishVoice.lang : "es-CL";
+      if (preferredSpanishVoice) {
+        utterance.voice = preferredSpanishVoice;
+      }
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
 
       utterance.onstart = () => {
         isSpeaking = true;
+        currentAudioRms = 0.45; // Modula el Arc Reactor en tono dorado
         if (voiceStateTag) {
           voiceStateTag.textContent = "VIERNES // TRANSMITIENDO VOZ";
           voiceStateTag.style.color = "var(--gold-stark)";
         }
       };
 
-      utterance.onend = () => {
+      const finishSpeech = () => {
         isSpeaking = false;
+        currentAudioRms = 0.05;
+        window._currentSpeechUtterance = null;
         if (voiceStateTag) {
           voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
           voiceStateTag.style.color = "var(--cyan-stark)";
         }
+        // Reanudar escucha de wakeword si está en modo continuo
+        if (isHandsFreeActive && !isListening) {
+          startSpeechEngine(true);
+        }
       };
 
-      utterance.onerror = () => {
-        isSpeaking = false;
+      utterance.onend = finishSpeech;
+      utterance.onerror = (err) => {
+        console.warn("TTS Error:", err);
+        finishSpeech();
       };
 
+      window._currentSpeechUtterance = utterance;
+
+      // Destrabar cola de Chromium
+      window.speechSynthesis.resume();
       window.speechSynthesis.speak(utterance);
-    } catch (e) {}
+    } catch (e) {
+      console.error("Error en speakText:", e);
+      isSpeaking = false;
+    }
   }
 
-  // =========================================================================
-  // --- MOTOR ROBUSTO DE VOZ: PERMISOS MICRÓFONO, SPEECH RECOGNITION & AUDIO ---
-  // =========================================================================
-  let recognition = null;
-  let micMediaStream = null;
-  let micAudioContext = null;
-  let micAnalyser = null;
-  let micAnimFrame = null;
+  // 3. RECONOCIMIENTO DE VOZ Y WAKEWORD EN VIVO
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognitionEngine = null;
   let isListening = false;
+  let isHandsFreeActive = true; // Permite responder a "Oye Viernes" continuamente
+  let silenceTimer = null;
+  let accumulatedTranscript = "";
 
   const btnMicText = btnTalkMic ? (btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic) : null;
-  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   function setListeningUI(active, labelText = "HABLAR CON V.I.E.R.N.E.S.") {
     isListening = active;
@@ -918,179 +976,190 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function startMicVisualizer(stream) {
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      if (!micAudioContext || micAudioContext.state === "closed") {
-        micAudioContext = new AudioCtx();
-      }
-      if (micAudioContext.state === "suspended") {
-        await micAudioContext.resume();
-      }
-
-      const source = micAudioContext.createMediaStreamSource(stream);
-      micAnalyser = micAudioContext.createAnalyser();
-      micAnalyser.fftSize = 256;
-      micAnalyser.smoothingTimeConstant = 0.4;
-      source.connect(micAnalyser);
-
-      const bufferLength = micAnalyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-
-      function updateMicRms() {
-        if (!isListening || !micAnalyser) {
-          if (!isSpeaking) currentAudioRms = 0.02;
-          return;
-        }
-        micAnalyser.getByteTimeDomainData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          const val = (dataArray[i] - 128) / 128;
-          sum += val * val;
-        }
-        const rms = Math.sqrt(sum / bufferLength);
-        currentAudioRms = Math.min(0.95, Math.max(0.05, rms * 4.0));
-        micAnimFrame = requestAnimationFrame(updateMicRms);
-      }
-      updateMicRms();
-    } catch (e) {
-      console.warn("Visualizador de micrófono:", e);
+  function initSpeechRecognition() {
+    if (!SpeechRec) {
+      console.warn("SpeechRecognition no soportado en este navegador.");
+      return null;
     }
-  }
 
-  function stopMicVisualizer() {
-    if (micAnimFrame) {
-      cancelAnimationFrame(micAnimFrame);
-      micAnimFrame = null;
-    }
-    if (micMediaStream) {
-      try {
-        micMediaStream.getTracks().forEach((track) => track.stop());
-      } catch (e) {}
-      micMediaStream = null;
-    }
-    micAnalyser = null;
-    if (!isSpeaking) currentAudioRms = 0.02;
-  }
+    const rec = new SpeechRec();
+    rec.lang = "es-CL";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
 
-  if (SpeechRec) {
-    recognition = new SpeechRec();
-    recognition.lang = "es-CL";
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      setListeningUI(true, "🎙️ ESCUCHANDO...");
-      StarkAudio.playBlip(650, 0.05);
-      appendLog("VOZ", "Micrófono activado. Habla ahora tu comando...", "log-info");
+    rec.onstart = () => {
+      if (isListening) {
+        setListeningUI(true, "🎙️ ESCUCHANDO...");
+        StarkAudio.playBlip(750, 0.04);
+      }
     };
 
-    recognition.onresult = (event) => {
-      let interimTranscript = "";
-      let finalTranscript = "";
+    rec.onresult = (event) => {
+      let interim = "";
+      let finalChunk = "";
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
+        const text = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript;
+          finalChunk += text;
         } else {
-          interimTranscript += transcript;
+          interim += text;
         }
       }
 
-      if (promptInput) {
-        promptInput.value = finalTranscript || interimTranscript;
+      const currentLiveText = (accumulatedTranscript + " " + finalChunk + " " + interim).trim();
+      const lower = currentLiveText.toLowerCase();
+
+      // Detección de Wakeword en caliente ("oye viernes", "viernes", "hey viernes")
+      const wakewords = ["oye viernes", "hey viernes", "viernes", "okey viernes"];
+      const containsWakeword = wakewords.some(w => lower.includes(w));
+
+      if (containsWakeword && !isListening) {
+        // Activación inmediata por voz sin necesidad de hacer clic
+        setListeningUI(true, "🎙️ WAKEWORD DETECTADO...");
+        StarkAudio.playSuccess();
+        appendLog("VOZ", `Wakeword detectado: "${currentLiveText}"`, "log-info");
       }
 
-      if (finalTranscript.trim()) {
-        appendLog("VOZ", `Dictado: "${finalTranscript.trim()}"`, "log-info");
-        btnPromptSend.click();
+      if (isListening) {
+        if (promptInput) {
+          promptInput.value = currentLiveText;
+        }
+
+        // Modulación visual del Arc Reactor con la voz
+        currentAudioRms = Math.min(0.85, 0.15 + (interim.length % 5) * 0.12);
+
+        // Temporizador de silencio: si el usuario calla 1.2 segundos, enviar comando
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          if (promptInput && promptInput.value.trim().length > 0) {
+            submitVoiceCommand(promptInput.value.trim());
+          }
+        }, 1300);
+      }
+
+      if (finalChunk) {
+        accumulatedTranscript = (accumulatedTranscript + " " + finalChunk).trim();
       }
     };
 
-    recognition.onerror = (event) => {
+    rec.onerror = (event) => {
       const err = event.error;
-      stopMicVisualizer();
-      setListeningUI(false);
+      if (err === "no-speech" || err === "aborted") return;
 
-      if (err === "no-speech") {
-        appendLog("VOZ", "No se detectó voz en el micrófono.", "log-warn");
-      } else if (err === "not-allowed" || err === "service-not-allowed") {
-        appendLog("VOZ", "Permiso de micrófono denegado. Haz clic en el ícono de candado/permisos en la barra de URL para habilitar el micrófono.", "log-warn");
+      setListeningUI(false);
+      if (err === "not-allowed" || err === "service-not-allowed") {
+        appendLog("VOZ", "Permiso de micrófono no otorgado. Habilita el micrófono en el candado de la URL.", "log-warn");
         StarkAudio.playAlert();
-      } else if (err === "audio-capture") {
-        appendLog("VOZ", "No se encontró dispositivo de micrófono.", "log-warn");
-      } else if (err !== "aborted") {
-        appendLog("VOZ", `Error en reconocimiento de voz: ${err}`, "log-warn");
+      } else {
+        appendLog("VOZ", `Aviso SpeechRecognition: ${err}`, "log-warn");
       }
     };
 
-    recognition.onend = () => {
-      stopMicVisualizer();
-      setListeningUI(false);
+    rec.onend = () => {
+      // Auto-reinicio para mantener el modo Manos Libres ("OYE VIERNES") siempre disponible
+      if (isHandsFreeActive && !isSpeaking) {
+        try {
+          rec.start();
+        } catch (e) {}
+      } else {
+        setListeningUI(false);
+      }
     };
+
+    return rec;
   }
 
+  function startSpeechEngine(isPassiveWakeMode = false) {
+    if (!recognitionEngine) {
+      recognitionEngine = initSpeechRecognition();
+    }
+    if (!recognitionEngine) return;
+
+    accumulatedTranscript = "";
+    if (silenceTimer) clearTimeout(silenceTimer);
+
+    if (!isPassiveWakeMode) {
+      setListeningUI(true, "🎙️ ESCUCHANDO...");
+    }
+
+    try {
+      recognitionEngine.start();
+    } catch (e) {
+      // Ya estaba iniciado
+    }
+  }
+
+  async function submitVoiceCommand(commandText) {
+    if (!commandText) return;
+    accumulatedTranscript = "";
+    if (silenceTimer) clearTimeout(silenceTimer);
+
+    // Pausar escucha durante el envío y la síntesis de voz
+    if (recognitionEngine) {
+      try { recognitionEngine.stop(); } catch (e) {}
+    }
+    setListeningUI(false);
+
+    if (promptInput) promptInput.value = "";
+    appendLog("BRUNO", commandText, "log-info");
+    StarkAudio.playBlip(800, 0.04);
+
+    if (btnPromptSend) {
+      btnPromptSend.disabled = true;
+      btnPromptSend.textContent = "...";
+    }
+
+    try {
+      const res = await secureFetch("/api/prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: commandText })
+      });
+      const data = await res.json();
+
+      if (res.ok && data && data.response) {
+        appendLog("VIERNES", data.response, "log-system");
+        speakText(data.response);
+      } else {
+        const errorText = data?.detail || data?.error || "No fue posible procesar la solicitud.";
+        appendLog("VIERNES", errorText, "log-warn");
+        speakText(errorText);
+      }
+      loadMemory();
+    } catch (e) {
+      appendLog("VIERNES", "Error de comunicación con el núcleo V.I.E.R.N.E.S.", "log-warn");
+    } finally {
+      if (btnPromptSend) {
+        btnPromptSend.disabled = false;
+        btnPromptSend.textContent = "ENVIAR";
+      }
+    }
+  }
+
+  // 4. MANEJADOR DEL BOTÓN "HABLAR CON V.I.E.R.N.E.S."
   async function handleMicButtonClick() {
     if (isListening) {
-      if (recognition) {
-        try { recognition.stop(); } catch (e) {}
+      if (silenceTimer) clearTimeout(silenceTimer);
+      if (promptInput && promptInput.value.trim()) {
+        submitVoiceCommand(promptInput.value.trim());
+      } else {
+        if (recognitionEngine) {
+          try { recognitionEngine.stop(); } catch (e) {}
+        }
+        setListeningUI(false);
       }
-      stopMicVisualizer();
-      setListeningUI(false);
       return;
     }
 
-    // Solicitar permiso de micrófono explícito si el navegador lo soporta
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        const userStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
-        });
-        micMediaStream = userStream;
-        startMicVisualizer(userStream);
-      } catch (mediaErr) {
-        if (mediaErr.name === "NotAllowedError" || mediaErr.name === "PermissionDeniedError") {
-          appendLog("VOZ", "Permiso de micrófono denegado en el navegador. Habilítalo en la barra de direcciones.", "log-warn");
-          StarkAudio.playAlert();
-          return;
-        } else if (mediaErr.name === "NotFoundError" || mediaErr.name === "DevicesNotFoundError") {
-          appendLog("VOZ", "No se detectó ningún micrófono conectado.", "log-warn");
-          return;
-        }
-      }
+    if (SpeechRec) {
+      startSpeechEngine(false);
     } else {
-      if (window.location.protocol !== "https:" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        appendLog("VOZ", "Contexto HTTP inseguro: Accede por HTTPS para habilitar el micrófono.", "log-warn");
-      }
-    }
-
-    if (recognition) {
-      try {
-        recognition.start();
-      } catch (recErr) {
-        try {
-          recognition.stop();
-          setTimeout(() => recognition.start(), 150);
-        } catch (e) {
-          stopMicVisualizer();
-          setListeningUI(false);
-        }
-      }
-    } else {
-      appendLog("VOZ", "Activando escucha directa en Raspberry Pi 5...", "log-info");
-      setListeningUI(true, "GRABANDO (PI 5)...");
+      appendLog("VOZ", "SpeechRecognition no disponible en el navegador. Activando escucha en Pi 5...", "log-info");
+      setListeningUI(true, "ESCUCHANDO (PI 5)...");
       await secureFetch("/api/wakeword/trigger", { method: "POST" });
-      setTimeout(() => {
-        stopMicVisualizer();
-        setListeningUI(false);
-      }, 4000);
+      setTimeout(() => setListeningUI(false), 4000);
     }
   }
 
@@ -1101,34 +1170,7 @@ document.addEventListener("DOMContentLoaded", () => {
   btnPromptSend?.addEventListener("click", async () => {
     const text = promptInput ? promptInput.value.trim() : "";
     if (!text) return;
-    promptInput.value = "";
-    appendLog("BRUNO", text, "log-info");
-    StarkAudio.playBlip(750, 0.04);
-
-    btnPromptSend.disabled = true;
-    btnPromptSend.textContent = "...";
-
-    try {
-      const res = await secureFetch("/api/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text })
-      });
-      const data = await res.json();
-      if (res.ok && data && data.response) {
-        appendLog("VIERNES", data.response, "log-system");
-        speakText(data.response);
-      } else {
-        appendLog("VIERNES", data?.detail || data?.error || "Error al procesar la respuesta del modelo.", "log-warn");
-        StarkAudio.playAlert();
-      }
-      loadMemory();
-    } catch (e) {
-      appendLog("VIERNES", "Error de red al comunicarse con el núcleo de IA.", "log-warn");
-    } finally {
-      btnPromptSend.disabled = false;
-      btnPromptSend.textContent = "ENVIAR";
-    }
+    submitVoiceCommand(text);
   });
 
   promptInput?.addEventListener("keydown", (e) => {

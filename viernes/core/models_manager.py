@@ -319,29 +319,32 @@ class GeminiModelsManager:
 
     def set_active_model(self, model_id: str) -> Dict[str, Any]:
         """Cambia el modelo activo de Gemini en memoria, entorno y configuración."""
-        if not model_id.startswith("models/"):
-            model_id = f"models/{model_id}"
-        self.active_model = model_id
-        os.environ["GEMINI_MODEL"] = model_id
+        clean_id = model_id.replace("models/", "").strip()
+        normalized_id = f"models/{clean_id}"
+        self.active_model = normalized_id
+        os.environ["GEMINI_MODEL"] = normalized_id
 
-        # Sincronizar en caliente con el módulo config y gemini_client
+        # Sincronizar en caliente con el módulo config
         try:
             from viernes import config
-            config.GEMINI_MODEL = model_id
+            config.GEMINI_MODEL = normalized_id
         except Exception:
             pass
 
+        # Sincronizar en caliente con gemini_client (ambos atributos)
         try:
             from viernes.core.gemini_live import gemini_client
-            gemini_client.model_name = model_id
+            gemini_client.model = normalized_id
+            gemini_client.model_name = normalized_id
         except Exception:
             pass
 
-        logger.info(f"✓ Modelo Gemini Live cambiado a: {model_id}")
+        logger.info(f"✓ Modelo Gemini Live cambiado a: {normalized_id}")
         return {
             "success": True,
-            "active_model": model_id,
-            "message": f"Modelo cambiado a '{model_id}'"
+            "active_model": normalized_id,
+            "clean_id": clean_id,
+            "message": f"Modelo cambiado a '{normalized_id}'"
         }
 
 

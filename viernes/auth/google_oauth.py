@@ -9,7 +9,7 @@ import logging
 import urllib.parse
 import urllib.request
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 
 logger = logging.getLogger("viernes.auth.google")
