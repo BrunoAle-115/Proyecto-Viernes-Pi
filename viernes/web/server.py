@@ -768,11 +768,10 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
                     m_type = payload.get("type")
 
                     if m_type == "audio_in":
-                        # Chunks de audio PCM 16kHz en Base64 desde el micrófono del navegador
+                        # Chunks de audio PCM 16kHz en Base64 directo (Zero-Wait Streaming sub-1ms)
                         b64_pcm = payload.get("data")
                         if b64_pcm:
-                            pcm_bytes = base64.b64decode(b64_pcm)
-                            await gemini_client.feed_audio_chunk(pcm_bytes)
+                            await gemini_client.feed_b64_audio_chunk(b64_pcm)
 
                     elif m_type == "start_live_session":
                         logger.info("🎙️ Sesión de voz dúplex activada desde el HUD.")

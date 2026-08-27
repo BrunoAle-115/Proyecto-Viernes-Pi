@@ -899,13 +899,14 @@ document.addEventListener("DOMContentLoaded", () => {
       this.activeSources = new Set();
       this.leftoverBytes = null;
       this.isPlaying = false;
-      this.leadTime = 0.025; // 25ms jitter buffer para fluidez
+      this.leadTime = 0.008; // 8ms jitter buffer óptimo para respuesta inmediata
+      this.maxDelay = 0.040; // 40ms umbral para corrección de drift temporal
     }
 
     initContext() {
       if (!this.audioCtx || this.audioCtx.state === "closed") {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioCtx();
+        this.audioCtx = new AudioCtx({ latencyHint: "interactive" });
         this.gainNode = this.audioCtx.createGain();
         this.gainNode.gain.value = 1.0;
         this.gainNode.connect(this.audioCtx.destination);
@@ -928,12 +929,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
       try {
         this.initContext();
+        const ctx = this.audioCtx;
+        const now = ctx.currentTime;
 
         // 1. Decodificación Base64
         const binaryStr = atob(base64Data);
         const incomingLen = binaryStr.length;
         if (incomingLen === 0) return;
 
+        // 2. Concatenación de bytes residuales (alineación 16-bit Little-Endian)
         let totalBytes;
         if (this.leftoverBytes && this.leftoverBytes.length > 0) {
           totalBytes = new Uint8Array(this.leftoverBytes.length + incomingLen);
@@ -949,7 +953,6 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
 
-        // 2. Manejo de alineación de 16 bits (múltiplos de 2)
         const numBytes = totalBytes.length;
         const isOdd = numBytes % 2 !== 0;
         const processableBytes = isOdd ? numBytes - 1 : numBytes;
@@ -958,22 +961,21 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isOdd) {
           this.leftoverBytes = new Uint8Array([totalBytes[numBytes - 1]]);
         }
-
         if (numSamples === 0) return;
 
-        // 3. Conversión segura Little-Endian PCM 16-bit a Float32
+        // 3. Conversión Little-Endian PCM 16-bit a Float32
         const dataView = new DataView(totalBytes.buffer, totalBytes.byteOffset, processableBytes);
         const float32 = new Float32Array(numSamples);
         let sumSquares = 0;
 
         for (let i = 0; i < numSamples; i++) {
-          const int16 = dataView.getInt16(i * 2, true); // true = Little-Endian
-          const sample = int16 < 0 ? int16 / 32768.0 : int16 / 32767.0;
-          float32[i] = sample;
-          sumSquares += sample * sample;
+          const int16 = dataView.getInt16(i * 2, true);
+          const s = int16 < 0 ? int16 / 32768.0 : int16 / 32767.0;
+          float32[i] = s;
+          sumSquares += s * s;
         }
 
-        // 4. Modulación visual del Arc Reactor (Dorado Stark)
+        // 4. Modulación HUD / Arc Reactor (Dorado Stark)
         const rms = Math.sqrt(sumSquares / numSamples);
         currentAudioRms = Math.min(0.95, Math.max(0.1, rms * 4.2));
         window._isLiveAudioPlaying = true;
@@ -983,16 +985,16 @@ document.addEventListener("DOMContentLoaded", () => {
           voiceStateTag.style.color = "var(--gold-stark)";
         }
 
-        // 5. Creación del AudioBuffer (resampling nativo del navegador a audioCtx.sampleRate)
-        const audioBuffer = this.audioCtx.createBuffer(1, numSamples, this.sourceSampleRate);
+        // 5. Creación del AudioBuffer
+        const audioBuffer = ctx.createBuffer(1, numSamples, this.sourceSampleRate);
         audioBuffer.getChannelData(0).set(float32);
 
-        const source = this.audioCtx.createBufferSource();
+        const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this.gainNode);
 
-        const now = this.audioCtx.currentTime;
-        if (this.nextStartTime < now) {
+        // 6. Control Dinámico de Jitter Buffer & Clock Drift
+        if (this.nextStartTime < now || (this.nextStartTime - now) > this.maxDelay) {
           this.nextStartTime = now + this.leadTime;
         }
 
@@ -1001,7 +1003,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         this.activeSources.add(source);
         source.onended = () => {
-          source.disconnect();
+          try { source.disconnect(); } catch (e) {}
           this.activeSources.delete(source);
           if (this.activeSources.size === 0) {
             window._isLiveAudioPlaying = false;
@@ -1020,18 +1022,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
     stopAll() {
       this.leftoverBytes = null;
-      for (const src of this.activeSources) {
-        try {
-          src.stop();
-          src.disconnect();
-        } catch (e) {}
+      if (this.audioCtx) {
+        const now = this.audioCtx.currentTime;
+        if (this.gainNode) {
+          try {
+            this.gainNode.gain.cancelScheduledValues(now);
+            this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, now);
+            this.gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.003);
+          } catch (e) {}
+        }
+        for (const src of this.activeSources) {
+          try {
+            src.stop(now + 0.003);
+            setTimeout(() => { try { src.disconnect(); } catch (e) {} }, 5);
+          } catch (e) {}
+        }
+        this.activeSources.clear();
+        this.nextStartTime = now;
+        setTimeout(() => {
+          if (this.gainNode && this.audioCtx) {
+            try {
+              const resumeNow = this.audioCtx.currentTime;
+              this.gainNode.gain.cancelScheduledValues(resumeNow);
+              this.gainNode.gain.setValueAtTime(1.0, resumeNow);
+            } catch (e) {}
+          }
+        }, 6);
+      } else {
+        this.activeSources.clear();
       }
-      this.activeSources.clear();
       window._isLiveAudioPlaying = false;
       isSpeaking = false;
-      if (this.audioCtx) {
-        this.nextStartTime = this.audioCtx.currentTime;
-      }
+      currentAudioRms = 0.02;
     }
   }
 
@@ -1046,12 +1068,14 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("pointerdown", unlockUserGesture, { once: true, passive: true });
   window.addEventListener("keydown", unlockUserGesture, { once: true, passive: true });
 
-  // 2. CAPTURADOR DE AUDIO STREAMING (MICRÓFONO -> RESAMPLE 16kHz PCM BASE64)
+  // 2. CAPTURADOR DE AUDIO STREAMING ULTRA-LIGERO (MICRÓFONO -> RESAMPLE 16kHz PCM BASE64)
   class LiveAudioRecorder {
     constructor(onChunkCallback, onRmsCallback) {
       this.onChunk = onChunkCallback;
       this.onRms = onRmsCallback;
       this.targetSampleRate = 16000;
+      this.chunkSamples = 800; // 50ms @ 16kHz (1600 bytes PCM16)
+      
       this.audioCtx = null;
       this.mediaStream = null;
       this.processor = null;
@@ -1059,58 +1083,35 @@ document.addEventListener("DOMContentLoaded", () => {
       this.silentGain = null;
       this.isRecording = false;
 
-      // Pacer interno: 1600 muestras = 100ms a 16kHz
-      this.TARGET_SAMPLES = 1600;
-      this.sampleBuffer = new Int16Array(this.TARGET_SAMPLES * 4);
-      this.sampleBufferIndex = 0;
-      this.flushTimer = null;
+      this.buffer = new Int16Array(this.chunkSamples);
+      this.bufferIndex = 0;
+      this.resamplePos = 0;
+      this.lastSample = 0;
     }
 
-    _downsampleBuffer(buffer, inSampleRate, outSampleRate) {
-      if (inSampleRate === outSampleRate) return buffer;
-      if (inSampleRate < outSampleRate) return buffer;
-      const ratio = inSampleRate / outSampleRate;
-      const newLen = Math.round(buffer.length / ratio);
-      const result = new Float32Array(newLen);
-      let offsetResult = 0;
-      let offsetBuffer = 0;
-
-      while (offsetResult < result.length) {
-        const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-        let accum = 0;
-        let count = 0;
-        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-          accum += buffer[i];
-          count++;
-        }
-        result[offsetResult] = count > 0 ? accum / count : buffer[offsetBuffer];
-        offsetResult++;
-        offsetBuffer = nextOffsetBuffer;
+    static fastInt16ToBase64(int16Arr) {
+      const u8 = new Uint8Array(int16Arr.buffer, int16Arr.byteOffset, int16Arr.byteLength);
+      const len = u8.length;
+      if (len <= 8192) {
+        return btoa(String.fromCharCode.apply(null, u8));
       }
-      return result;
-    }
-
-    _flushBuffer() {
-      if (this.sampleBufferIndex === 0) return;
-      const chunk = this.sampleBuffer.subarray(0, this.sampleBufferIndex);
-      this.sampleBufferIndex = 0;
-
-      const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
       let binary = "";
-      const chunkSize = 4096;
-      for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-        const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.byteLength));
-        binary += String.fromCharCode.apply(null, slice);
+      for (let i = 0; i < len; i += 8192) {
+        binary += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + 8192, len)));
       }
-      const b64 = btoa(binary);
-      if (this.onChunk) this.onChunk(b64);
+      return btoa(binary);
     }
 
     async start() {
       if (this.isRecording) return true;
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioCtx();
+        try {
+          this.audioCtx = new AudioCtx({ sampleRate: this.targetSampleRate, latencyHint: "interactive" });
+        } catch (e) {
+          this.audioCtx = new AudioCtx();
+        }
+
         if (this.audioCtx.state === "suspended") {
           await this.audioCtx.resume();
         }
@@ -1125,43 +1126,47 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         this.sourceNode = this.audioCtx.createMediaStreamSource(this.mediaStream);
-        // Buffer de 2048 muestras (~42ms a 48kHz)
-        this.processor = this.audioCtx.createScriptProcessor(2048, 1, 1);
+        this.processor = this.audioCtx.createScriptProcessor(1024, 1, 1);
+        const inRate = this.audioCtx.sampleRate;
+        const ratio = inRate / this.targetSampleRate;
 
         this.processor.onaudioprocess = (e) => {
           if (!this.isRecording) return;
-          const inputData = e.inputBuffer.getChannelData(0);
+          const channel = e.inputBuffer.getChannelData(0);
+          const inLen = channel.length;
 
-          // 1. RMS para modulación visual
-          let sum = 0;
-          for (let i = 0; i < inputData.length; i++) {
-            sum += inputData[i] * inputData[i];
-          }
-          const rms = Math.sqrt(sum / inputData.length);
+          // RMS instantáneo
+          let sumSq = 0;
+          for (let i = 0; i < inLen; i += 2) sumSq += channel[i] * channel[i];
+          const rms = Math.sqrt(sumSq / (inLen / 2));
           if (this.onRms) this.onRms(rms);
 
-          // 2. Downsampling estricto a 16kHz
-          const resampled = this._downsampleBuffer(inputData, this.audioCtx.sampleRate, this.targetSampleRate);
+          // Resample lineal continuo + Conversión Int16
+          let pos = this.resamplePos;
+          while (pos < inLen) {
+            const idx = Math.floor(pos);
+            const frac = pos - idx;
+            const s1 = idx === 0 ? this.lastSample : channel[idx - 1];
+            const s2 = channel[idx];
+            let s = s1 + frac * (s2 - s1);
+            s = s < -1 ? -1 : (s > 1 ? 1 : s);
 
-          // 3. Conversión Float32 a Int16 y acumulación en sampleBuffer
-          for (let i = 0; i < resampled.length; i++) {
-            const s = Math.max(-1, Math.min(1, resampled[i]));
-            this.sampleBuffer[this.sampleBufferIndex++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            this.buffer[this.bufferIndex++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
 
-            if (this.sampleBufferIndex >= this.TARGET_SAMPLES) {
-              if (this.flushTimer) clearTimeout(this.flushTimer);
-              this._flushBuffer();
+            if (this.bufferIndex >= this.chunkSamples) {
+              const chunk = this.buffer.subarray(0, this.bufferIndex);
+              this.bufferIndex = 0;
+              if (this.onChunk) {
+                const b64 = LiveAudioRecorder.fastInt16ToBase64(chunk);
+                this.onChunk(b64);
+              }
             }
+            pos += ratio;
           }
-
-          // Flush de seguridad para últimos fonemas
-          if (this.sampleBufferIndex > 0) {
-            if (this.flushTimer) clearTimeout(this.flushTimer);
-            this.flushTimer = setTimeout(() => this._flushBuffer(), 120);
-          }
+          this.resamplePos = pos - inLen;
+          this.lastSample = channel[inLen - 1];
         };
 
-        // Blindaje de audio: GainNode en 0 para evitar feedback del micrófono a los altavoces
         this.silentGain = this.audioCtx.createGain();
         this.silentGain.gain.value = 0.0;
 
@@ -1177,6 +1182,39 @@ document.addEventListener("DOMContentLoaded", () => {
         return false;
       }
     }
+
+    stop() {
+      this.isRecording = false;
+      if (this.bufferIndex > 0) {
+        const chunk = this.buffer.subarray(0, this.bufferIndex);
+        this.bufferIndex = 0;
+        if (this.onChunk) {
+          const b64 = LiveAudioRecorder.fastInt16ToBase64(chunk);
+          this.onChunk(b64);
+        }
+      }
+      if (this.sourceNode) {
+        try { this.sourceNode.disconnect(); } catch (e) {}
+        this.sourceNode = null;
+      }
+      if (this.processor) {
+        try { this.processor.disconnect(); } catch (e) {}
+        this.processor = null;
+      }
+      if (this.silentGain) {
+        try { this.silentGain.disconnect(); } catch (e) {}
+        this.silentGain = null;
+      }
+      if (this.mediaStream) {
+        try { this.mediaStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+        this.mediaStream = null;
+      }
+      if (this.audioCtx) {
+        try { this.audioCtx.close(); } catch (e) {}
+        this.audioCtx = null;
+      }
+    }
+  }
 
     stop() {
       this.isRecording = false;

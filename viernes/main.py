@@ -13,7 +13,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import uvicorn
+import gc
 from dotenv import load_dotenv
+
+# Optimización de Garbage Collection para streaming de audio continuo en tiempo real
+gc.set_threshold(50000, 10, 10)
 
 # Cargar variables de entorno desde .env
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
