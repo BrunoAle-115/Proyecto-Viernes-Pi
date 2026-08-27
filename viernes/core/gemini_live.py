@@ -21,15 +21,25 @@ from viernes.core.event_bus import bus
 
 logger = logging.getLogger("viernes.gemini_live")
 
-VIERNES_SYSTEM_PROMPT = """Eres V.I.E.R.N.E.S., la inteligencia artificial táctica y asistente personal de Stark Industries instalada en la Raspberry Pi 5 de Bruno.
-REGLAS DE OPERACIÓN:
-1. Tratas a Bruno como "Señor" o "Jefe". Eres leal, ejecutiva, serena, militar y de respuestas instantáneas.
-2. Tus respuestas son habladas por voz: Sé concisa, directa y natural (máximo 1 o 2 oraciones por respuesta).
-3. Tienes control total del hogar, luces, clima, música, correos, noticias de Chile, GitHub y red. Si te piden una acción, invoca la herramienta correspondiente de inmediato.
-4. Jamás menciones entrenamientos de gimnasio ni deportes.
-"""
+VIERNES_SYSTEM_PROMPT = """Eres V.I.E.R.N.E.S., la inteligencia artificial táctica y asistente personal de Stark Industries instalada en la Raspberry Pi 5 de Don Bruno en Santiago de Chile.
+IDENTIDAD Y TONO:
+- Trata a Bruno con respeto táctico, lealtad y elegancia ('Señor', 'Jefe' o 'Don Bruno').
+- Tono: Sofisticado, conciso, proactivo y con sutil ingenio Stark. Cero adulación vacía.
+- Ubicación: Santiago de Chile. Conoce el clima local de Santiago, hora oficial de Chile continental y noticias nacionales (emergencias y política; omite fútbol y deportes).
+REGLAS PARA VOZ INTERACTIVA:
+- Respuestas habladas: 1 a 2 oraciones operativas directas, naturales, fluidas y con personalidad.
+- Cero formato visual: NUNCA pronuncies asteriscos, markdown, viñetas, tablas o código al hablar.
+- Invoca herramientas de inmediato para: luces WiZ, aire acondicionado, Android TV del Living, Wake-on-LAN de PC, correos Gmail/Zoho, recordatorios y memoria semántica Vector RAG. Confirma brevemente por voz."""
 
 GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+DEFAULT_FALLBACK_MODEL = "models/gemini-2.5-flash-native-audio-latest"
+
+LIVE_CAPABLE_MODELS = {
+    "models/gemini-2.5-flash-native-audio-latest",
+    "models/gemini-2.5-flash-native-audio-preview-12-2025",
+    "models/gemini-2.0-flash-exp",
+    "models/gemini-2.0-flash-realtime-exp"
+}
 
 
 class DirectAudioStreamer:
@@ -69,6 +79,10 @@ class DirectAudioStreamer:
                 self._queue.task_done()
             except Exception:
                 break
+
+    def reset(self):
+        """Alias de purge para compatibilidad con eventos de barge-in."""
+        self.purge()
 
     async def push_chunk(self, b64_pcm: str):
         """Encola el frame descartando frames viejos si hay retraso de red (Zero-Lag guarantee)."""
@@ -111,7 +125,7 @@ class GeminiLiveClient:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         # Obtener modelo dinámicamente sin hardcoding
-        initial_model = model or os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
+        initial_model = model or os.getenv("GEMINI_MODEL", DEFAULT_FALLBACK_MODEL)
         if not initial_model.startswith("models/"):
             initial_model = f"models/{initial_model}"
         self.model = initial_model
@@ -129,11 +143,18 @@ class GeminiLiveClient:
 
     @property
     def active_live_model(self) -> str:
-        """Devuelve el modelo normalizado para Live WebSocket respetando la selección del usuario."""
-        m = getattr(self, "model", None) or getattr(self, "model_name", None) or models_manager.active_model or os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
+        """Devuelve el modelo normalizado para Live WebSocket con fallback a 2.5-native-audio si el modelo no soporta audio bidi."""
+        m = getattr(self, "model", None) or getattr(self, "model_name", None) or models_manager.active_model or os.getenv("GEMINI_MODEL", DEFAULT_FALLBACK_MODEL)
         if not m:
-            m = "models/gemini-2.5-flash-native-audio-latest"
-        return m if m.startswith("models/") else f"models/{m}"
+            m = DEFAULT_FALLBACK_MODEL
+        if not m.startswith("models/"):
+            m = f"models/{m}"
+
+        if m not in LIVE_CAPABLE_MODELS:
+            logger.info(f"ℹ️ Modelo '{m}' configurado. En canal de voz interactiva WebSocket se utiliza '{DEFAULT_FALLBACK_MODEL}'.")
+            return DEFAULT_FALLBACK_MODEL
+
+        return m
 
     def _build_setup_message(self) -> dict:
         """Construye el payload exacto de inicialización acorde al protocolo Gemini Live."""
@@ -229,10 +250,27 @@ class GeminiLiveClient:
                     )
 
                     for task in pending:
-                        task.cancel()
+                        if not task.done():
+                            task.cancel()
 
-            except websockets.exceptions.ConnectionClosed as e:
-                logger.warning(f"Conexión WebSocket cerrada con Gemini Live (código {e.code}: {e.reason}).")
+            except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosed) as e:
+                close_code = getattr(e, "code", None)
+                close_reason = getattr(e, "reason", "") or str(e)
+                logger.warning(f"Conexión WebSocket cerrada con Gemini Live (código {close_code}: {close_reason}).")
+
+                # Detección de Error 1008 (Policy Violation / Modelo incompatible con bidi audio)
+                is_1008 = close_code == 1008 or "1008" in str(close_reason) or "policy" in str(close_reason).lower()
+                if is_1008 and target_model != DEFAULT_FALLBACK_MODEL:
+                    logger.warning(f"⚠️ Error 1008 en {target_model}. Conmutando de inmediato al modelo certificado '{DEFAULT_FALLBACK_MODEL}'.")
+                    self.model = DEFAULT_FALLBACK_MODEL
+                    self.model_name = DEFAULT_FALLBACK_MODEL
+                    retry_delay = 0.5
+                    await bus.publish("ai/error", {
+                        "error": f"Error 1008 en '{target_model}'. Fallback automático a '{DEFAULT_FALLBACK_MODEL}'.",
+                        "fallback": DEFAULT_FALLBACK_MODEL
+                    }, sender="gemini_live")
+                else:
+                    await bus.publish("ai/disconnected", {"code": close_code, "reason": close_reason}, sender="gemini_live")
             except Exception as e:
                 logger.error(f"Error en sesión Gemini Live: {e}")
             finally:
@@ -359,61 +397,43 @@ class GeminiLiveClient:
             await self.send_audio_chunk_direct(bytes(audio_data))
 
     async def _handle_tool_call(self, tool_call: dict):
-        """Ejecuta herramientas y responde con el esquema exacto de BidiGenerateContent."""
+        """Ejecuta herramientas concurrentemente y responde de forma thread-safe con el esquema exacto de BidiGenerateContent."""
         function_calls = tool_call.get("functionCalls", [])
-        responses = []
+        if not function_calls:
+            return
 
-        for fc in function_calls:
+        async def _run_single_tool(fc):
             call_id = fc.get("id")
             name = fc.get("name")
             args = fc.get("args", {})
             logger.info(f"⚡ [Gemini Tool Call] Invocando: {name} (ID: {call_id}) con args: {args}")
-
             try:
                 result = await ToolsDispatcher.execute_tool(name, args)
             except Exception as ex:
                 logger.error(f"Error ejecutando herramienta {name}: {ex}")
                 result = {"status": "error", "message": str(ex)}
 
-            responses.append({
+            return {
                 "id": call_id,
                 "name": name,
                 "response": {"output": result}
-            })
+            }
 
+        responses = await asyncio.gather(*[_run_single_tool(fc) for fc in function_calls])
         tool_response_msg = {
             "toolResponse": {
-                "functionResponses": responses
+                "functionResponses": list(responses)
             }
         }
         if self.is_connected and self.ws:
-            await self.ws.send(json.dumps(tool_response_msg))
-            logger.info(f"📤 [Tool Response] {len(responses)} resultados enviados a Gemini Live.")
-
-    async def _send_audio_loop(self):
-        """Transmite continuamente el audio PCM 16kHz del micrófono hacia Gemini Live."""
-        try:
-            while self.is_connected and self.ws:
-                pcm_data = await audio_pipeline.audio_queue_in.get()
-                if pcm_data and len(pcm_data) > 0:
-                    b64_audio = base64.b64encode(pcm_data).decode("utf-8")
-                    realtime_msg = {
-                        "realtimeInput": {
-                            "mediaChunks": [
-                                {
-                                    "mimeType": "audio/pcm;rate=16000",
-                                    "data": b64_audio
-                                }
-                            ]
-                        }
-                    }
-                    await self.ws.send(json.dumps(realtime_msg))
-                audio_pipeline.audio_queue_in.task_done()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Error enviando audio a Gemini Live: {e}")
-            raise
+            try:
+                payload = json.dumps(tool_response_msg, default=str)
+                async with self.ws_lock:
+                    if self.is_connected and self.ws:
+                        await self.ws.send(payload)
+                logger.info(f"📤 [Tool Response] {len(responses)} resultados enviados a Gemini Live.")
+            except Exception as e:
+                logger.error(f"Error enviando toolResponse a Gemini Live: {e}")
 
     async def _generate_content_rest(self, prompt: str, context_hint: str = "") -> Optional[str]:
         """Ejecuta inferencia directa con la API oficial de Google Gemini con soporte para Function Calling."""

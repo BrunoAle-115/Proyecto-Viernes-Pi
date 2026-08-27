@@ -39,7 +39,7 @@ class EventBus:
         return cls._instance
 
     def subscribe(self, topic: str, callback: Callable[[Event], Coroutine[Any, Any, None]]):
-        """Suscribe una corrutina a un tópico de eventos."""
+        """Suscribe una corrutina a un tópico de eventos de forma idempotente."""
         if topic not in self._subscribers:
             self._subscribers[topic] = []
         if callback not in self._subscribers[topic]:

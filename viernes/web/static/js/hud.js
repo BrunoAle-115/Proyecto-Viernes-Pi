@@ -899,8 +899,8 @@ document.addEventListener("DOMContentLoaded", () => {
       this.activeSources = new Set();
       this.leftoverBytes = null;
       this.isPlaying = false;
-      this.leadTime = 0.008; // 8ms jitter buffer óptimo para respuesta inmediata
-      this.maxDelay = 0.040; // 40ms umbral para corrección de drift temporal
+      this.leadTime = 0.025; // 25ms jitter buffer óptimo para absorber jitter sin desfase
+      this.maxDrift = 0.500; // 500ms umbral seguro para resincronización de drift temporal
     }
 
     initContext() {
@@ -993,12 +993,13 @@ document.addEventListener("DOMContentLoaded", () => {
         source.buffer = audioBuffer;
         source.connect(this.gainNode);
 
-        // 6. Control Dinámico de Jitter Buffer & Clock Drift
-        if (this.nextStartTime < now || (this.nextStartTime - now) > this.maxDelay) {
+        // 6. Scheduling Temporal Secuencial (Continuous Gapless Chaining + Safe Drift Protection)
+        if (this.nextStartTime < now || (this.nextStartTime - now) > this.maxDrift) {
           this.nextStartTime = now + this.leadTime;
         }
 
-        source.start(this.nextStartTime);
+        const scheduledStartTime = this.nextStartTime;
+        source.start(scheduledStartTime);
         this.nextStartTime += audioBuffer.duration;
 
         this.activeSources.add(source);
@@ -1038,7 +1039,7 @@ document.addEventListener("DOMContentLoaded", () => {
           } catch (e) {}
         }
         this.activeSources.clear();
-        this.nextStartTime = now;
+        this.nextStartTime = 0;
         setTimeout(() => {
           if (this.gainNode && this.audioCtx) {
             try {
@@ -1050,6 +1051,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }, 6);
       } else {
         this.activeSources.clear();
+        this.nextStartTime = 0;
       }
       window._isLiveAudioPlaying = false;
       isSpeaking = false;
@@ -1121,7 +1123,7 @@ document.addEventListener("DOMContentLoaded", () => {
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: false
           }
         });
 
