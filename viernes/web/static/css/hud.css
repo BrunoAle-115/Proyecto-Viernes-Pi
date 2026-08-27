@@ -683,20 +683,72 @@ body.hud-body {
 .device-name { font-family: var(--font-hud); font-size: 12px; color: #fff; }
 .device-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
 
-.btn-wol {
+.btn-wol, .btn-light-toggle {
   background: rgba(0, 240, 255, 0.1);
   border: 1px solid var(--cyan-stark);
   color: var(--cyan-stark);
   font-family: var(--font-hud);
   font-size: 10px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 3px;
   cursor: pointer;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
 }
 
-.btn-wol:hover { background: var(--cyan-stark); color: #000; }
+.btn-wol:hover, .btn-light-toggle:hover { background: var(--cyan-stark); color: #000; }
+
+.palette-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.btn-palette {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.btn-palette:hover {
+  background: rgba(0, 240, 255, 0.2);
+  border-color: var(--cyan-stark);
+}
+
+.btn-palette.warm { border-color: #ffb700; color: #ffb700; }
+.btn-palette.cool { border-color: #00f0ff; color: #00f0ff; }
+.btn-palette.relax { border-color: #00ff9d; color: #00ff9d; }
+.btn-palette.party { border-color: #ff0077; color: #ff0077; }
+
+.ac-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-ac-temp {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--gold-stark);
+  color: var(--gold-stark);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.btn-ac-temp:hover {
+  background: var(--gold-stark);
+  color: #000;
+}
 
 .badge-approved {
   background: rgba(0, 255, 157, 0.2);

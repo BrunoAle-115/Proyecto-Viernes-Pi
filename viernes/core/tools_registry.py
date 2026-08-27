@@ -40,24 +40,70 @@ GEMINI_TOOL_DECLARATIONS = [
     },
     {
         "name": "control_smart_light",
-        "description": "Enciende, apaga o ajusta el brillo de las luces inteligentes del hogar o escritorio (Yeelight, Tuya, Tasmota, Shelly).",
+        "description": "Enciende, apaga, ajusta el brillo o cambia la paleta de color/ambiente de las luces inteligentes (WiZ UDP 38899, Yeelight, Tuya, Tasmota, Shelly).",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "target": {
                     "type": "STRING",
-                    "description": "Nombre de la luz o IP (ej. 'luces escritorio', 'lampara', '192.168.1.120')."
+                    "description": "Nombre de la luz o IP (ej. 'luz wiz', 'luces escritorio', '192.168.100.15')."
                 },
                 "action": {
                     "type": "STRING",
-                    "description": "Acción a realizar: 'on', 'off', 'toggle', 'brightness'."
+                    "description": "Acción a realizar: 'on', 'off', 'toggle', 'brightness', 'palette'."
                 },
                 "brightness": {
                     "type": "INTEGER",
-                    "description": "Nivel de brillo de 1 a 100 si la acción es brightness o encendido."
+                    "description": "Nivel de brillo de 10 a 100."
+                },
+                "palette": {
+                    "type": "STRING",
+                    "description": "Paleta o ambiente a aplicar: 'cálida' (2700K), 'fría' (6500K), 'día' (4200K), 'relax', 'cozy', 'fiesta', 'rojo', 'azul', 'cyan', 'oro', 'verde', 'morado'."
                 }
             },
             "required": ["target", "action"]
+        }
+    },
+    {
+        "name": "get_smart_light_palette",
+        "description": "Consulta el estado actual de la luz WiZ e informa si está encendida, su nivel de brillo y en qué paleta de color o ambiente se encuentra (vía getPilot).",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "target": {
+                    "type": "STRING",
+                    "description": "Nombre o IP de la luz WiZ (por defecto 'luz_wiz' o '192.168.100.15')."
+                }
+            }
+        }
+    },
+    {
+        "name": "control_air_conditioner",
+        "description": "Controla el Aire Acondicionado AIRSYS (Smart Life / Tuya): encendido, temperatura deseada (16°C a 30°C), modo de operación (frío, calor, ventilación, auto) y velocidad del ventilador.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "target": {
+                    "type": "STRING",
+                    "description": "Nombre o IP del aire acondicionado (por defecto 'aire_ac' o '192.168.100.20')."
+                },
+                "power": {
+                    "type": "BOOLEAN",
+                    "description": "True para encender, False para apagar."
+                },
+                "temperature": {
+                    "type": "INTEGER",
+                    "description": "Temperatura objetivo en grados Celsius (entre 16 y 30)."
+                },
+                "mode": {
+                    "type": "STRING",
+                    "description": "Modo de climatización: 'cool' (frío), 'heat' (calor), 'fan' (ventilador), 'auto', 'dry' (deshumidificar)."
+                },
+                "fan_speed": {
+                    "type": "STRING",
+                    "description": "Velocidad de ventilación: 'auto', 'low', 'med', 'high'."
+                }
+            }
         }
     },
     {
@@ -222,10 +268,30 @@ class ToolsDispatcher:
                 return await device_mgr.execute_turn_on(target)
 
             elif name == "control_smart_light":
-                target = args.get("target", "luces_escritorio")
+                target = args.get("target", "luz_wiz")
                 action = args.get("action", "toggle")
                 brightness = args.get("brightness", 100)
-                return await device_mgr.execute_control_light(target, state=action, brightness=brightness)
+                palette = args.get("palette")
+                return await device_mgr.execute_control_light(target, state=action, brightness=brightness, palette=palette)
+
+            elif name == "get_smart_light_palette":
+                target = args.get("target", "luz_wiz")
+                status = await device_mgr.execute_get_light_status(target)
+                return {
+                    "success": status.get("online", False),
+                    "status": status,
+                    "voice_response": status.get("summary", "No se pudo consultar el estado de la luz WiZ.")
+                }
+
+            elif name == "control_air_conditioner":
+                target = args.get("target", "aire_ac")
+                power = args.get("power", True)
+                temp = args.get("temperature", 22)
+                mode = args.get("mode", "cool")
+                fan = args.get("fan_speed", "auto")
+                return await device_mgr.execute_control_ac(
+                    target_name_or_ip=target, power=power, target_temp=temp, mode=mode, fan_speed=fan
+                )
 
             elif name == "get_chile_news":
                 limit = args.get("limit", 4)

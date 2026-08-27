@@ -138,9 +138,17 @@ class WolRequest(BaseModel):
         return sanitize_ip_or_mac(v)
 
 class LightRequest(BaseModel):
-    target: str = Field(..., max_length=60)
+    target: str = Field(default="luz_wiz", max_length=60)
     action: str = Field(default="toggle", max_length=20)
     brightness: int = Field(default=100, ge=1, le=100)
+    palette: Optional[str] = Field(default=None, max_length=40)
+
+class AcRequest(BaseModel):
+    target: str = Field(default="aire_ac", max_length=60)
+    power: bool = Field(default=True)
+    temperature: int = Field(default=22, ge=16, le=30)
+    mode: str = Field(default="cool", max_length=20)
+    fan_speed: str = Field(default="auto", max_length=20)
 
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=1000)
@@ -250,7 +258,21 @@ async def trigger_wol(req: WolRequest, user: dict = Depends(get_current_user)):
 
 @app.post("/api/lights")
 async def trigger_lights(req: LightRequest, user: dict = Depends(get_current_user)):
-    return await device_mgr.execute_control_light(req.target, req.action, req.brightness)
+    return await device_mgr.execute_control_light(req.target, req.action, req.brightness, req.palette)
+
+@app.get("/api/lights/status")
+async def get_lights_status(target: str = "luz_wiz", user: dict = Depends(get_current_user)):
+    return await device_mgr.execute_get_light_status(target)
+
+@app.post("/api/ac")
+async def trigger_ac(req: AcRequest, user: dict = Depends(get_current_user)):
+    return await device_mgr.execute_control_ac(
+        target_name_or_ip=req.target,
+        power=req.power,
+        target_temp=req.temperature,
+        mode=req.mode,
+        fan_speed=req.fan_speed
+    )
 
 @app.get("/api/emails")
 async def get_emails(user: dict = Depends(get_current_user)):

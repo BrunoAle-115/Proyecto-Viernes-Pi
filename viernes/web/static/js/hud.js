@@ -414,7 +414,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 8. Load Discovered Devices Matrix
+  // 8. Load Discovered Devices Matrix (WiZ, AC, WoL, IoT)
   async function loadDevices() {
     try {
       const res = await secureFetch("/api/devices");
@@ -424,22 +424,60 @@ document.addEventListener("DOMContentLoaded", () => {
       devices.forEach((dev) => {
         const card = document.createElement("div");
         card.className = "device-card";
+        card.style.flexDirection = "column";
+        card.style.alignItems = "stretch";
+        card.style.gap = "6px";
+
         const isOnline = dev.status === "online";
         const statusBadge = isOnline ? '<span style="color:var(--green-matrix)">● ONLINE</span>' : '<span style="color:var(--text-dim)">○ OFFLINE</span>';
 
-        let actionBtn = "";
+        let actionControls = "";
         if (dev.wol_enabled || dev.type === "desktop") {
-          actionBtn = `<button class="btn-wol" onclick="triggerWol('${escapeHtml(dev.ip)}')">ENCENDER WOL</button>`;
-        } else if (dev.type === "light") {
-          actionBtn = `<button class="btn-light-toggle" onclick="toggleLight('${escapeHtml(dev.ip)}')">LUCES ON/OFF</button>`;
+          actionControls = `
+            <div style="display:flex; justify-content:flex-end;">
+              <button class="btn-wol" onclick="triggerWol('${escapeHtml(dev.ip)}')">ENCENDER WOL</button>
+            </div>
+          `;
+        } else if (dev.type === "wiz_light" || dev.type === "light") {
+          actionControls = `
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+              <button class="btn-light-toggle" onclick="toggleLight('${escapeHtml(dev.ip)}')">ON / OFF</button>
+              <button class="btn-palette" onclick="getLightStatus('${escapeHtml(dev.ip)}')">📊 PALETA ACTUAL</button>
+              <div class="palette-group">
+                <button class="btn-palette warm" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'cálida')">Cálida</button>
+                <button class="btn-palette cool" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'fría')">Fría</button>
+                <button class="btn-palette" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'día')">Día</button>
+                <button class="btn-palette relax" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'relax')">Relax</button>
+                <button class="btn-palette party" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'fiesta')">Fiesta</button>
+                <button class="btn-palette" style="border-color:#00f0ff; color:#00f0ff;" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'cyan')">Cyan</button>
+                <button class="btn-palette" style="border-color:#ffb700; color:#ffb700;" onclick="setLightPalette('${escapeHtml(dev.ip)}', 'oro')">Oro</button>
+              </div>
+            </div>
+          `;
+        } else if (dev.type === "air_conditioner") {
+          actionControls = `
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+              <button class="btn-light-toggle" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 22, 'cool')">❄️ FRÍO 22°C</button>
+              <button class="btn-palette warm" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 24, 'heat')">🔥 CALOR 24°C</button>
+              <button class="btn-palette" onclick="setAcControl('${escapeHtml(dev.ip)}', false, 22, 'cool')">APAGAR</button>
+              <div class="ac-controls">
+                <button class="btn-ac-temp" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 18, 'cool')">18°</button>
+                <button class="btn-ac-temp" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 20, 'cool')">20°</button>
+                <button class="btn-ac-temp" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 22, 'cool')">22°</button>
+                <button class="btn-ac-temp" onclick="setAcControl('${escapeHtml(dev.ip)}', true, 24, 'cool')">24°</button>
+              </div>
+            </div>
+          `;
         }
 
         card.innerHTML = `
-          <div class="device-info">
-            <div class="device-name">${escapeHtml(dev.alias)} ${statusBadge}</div>
-            <div class="device-sub">IP: ${escapeHtml(dev.ip)} | MAC: ${escapeHtml(dev.mac || "Auto-Resolv")} | ${escapeHtml(dev.vendor || "IoT")}</div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="device-info">
+              <div class="device-name">${escapeHtml(dev.alias)} ${statusBadge}</div>
+              <div class="device-sub">IP: ${escapeHtml(dev.ip)} | MAC: ${escapeHtml(dev.mac || "Auto-Resolv")} | ${escapeHtml(dev.vendor || "IoT")}</div>
+            </div>
           </div>
-          <div>${actionBtn}</div>
+          ${actionControls}
         `;
         deviceMatrix.appendChild(card);
       });
@@ -600,6 +638,36 @@ document.addEventListener("DOMContentLoaded", () => {
     appendLog("IOT", data.message, "log-success");
   };
 
+  window.setLightPalette = async (target, palette) => {
+    appendLog("WIZ", `Configurando paleta '${palette}' en luz ${target}...`, "log-info");
+    const res = await secureFetch("/api/lights", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, action: "palette", palette: palette })
+    });
+    const data = await res.json();
+    appendLog("WIZ", data.message, "log-success");
+  };
+
+  window.getLightStatus = async (target) => {
+    appendLog("WIZ", `Consultando estado getPilot en ${target}...`, "log-info");
+    const res = await secureFetch(`/api/lights/status?target=${encodeURIComponent(target)}`);
+    const data = await res.json();
+    appendLog("WIZ", data.summary || "Luz WiZ no responde.", data.online ? "log-success" : "log-warn");
+  };
+
+  window.setAcControl = async (target, power, temp, mode) => {
+    const act = power ? `Ajustando AC a ${temp}°C (${mode})...` : "Apagando Aire Acondicionado...";
+    appendLog("AIRSYS", act, "log-info");
+    const res = await secureFetch("/api/ac", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, power, temperature: temp, mode: mode, fan_speed: "auto" })
+    });
+    const data = await res.json();
+    appendLog("AIRSYS", data.message, "log-success");
+  };
+
   btnPromptSend.addEventListener("click", async () => {
     const text = promptInput.value.trim();
     if (!text) return;
@@ -626,9 +694,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   btnRescanNet.addEventListener("click", async () => {
-    appendLog("RED", "Escaneando subred local con ARP...", "log-info");
+    appendLog("RED", "Iniciando Reconocimiento Rápido Nmap + NetBIOS en subred activa...", "log-info");
     await secureFetch("/api/scan", { method: "POST" });
     await loadDevices();
+    appendLog("RED", "✓ Reconocimiento de red completado y matriz actualizada.", "log-success");
   });
 
   btnMakeCall.addEventListener("click", async () => {

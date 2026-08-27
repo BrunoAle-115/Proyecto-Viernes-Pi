@@ -132,4 +132,73 @@ def test_advanced_tools_dispatcher():
         })
         assert res_mem["success"] is True
 
+        # Test tool WiZ con paleta
+        res_wiz = await ToolsDispatcher.execute_tool("control_smart_light", {
+            "target": "luz_wiz",
+            "action": "palette",
+            "palette": "cálida",
+            "brightness": 80
+        })
+        assert "params" in res_wiz
+        assert res_wiz["params"]["temp"] == 2700
+
+        # Test tool AC AIRSYS
+        res_ac = await ToolsDispatcher.execute_tool("control_air_conditioner", {
+            "target": "aire_ac",
+            "power": True,
+            "temperature": 21,
+            "mode": "cool"
+        })
+        assert res_ac["success"] is True
+        assert res_ac["target_temp"] == 21
+
     asyncio.run(_test())
+
+
+def test_wiz_light_and_palette_control():
+    from viernes.iot.smart_lights import SmartDeviceController, WIZ_SCENES, COLOR_PALETTES
+
+    async def _test():
+        # 1. Probar paleta cálida (temp 2700K)
+        res_warm = await SmartDeviceController.control_wiz_light("192.168.100.15", palette="cálida", dimming=75)
+        assert res_warm["params"]["temp"] == 2700
+        assert res_warm["params"]["dimming"] == 75
+
+        # 2. Probar paleta fría (temp 6500K)
+        res_cool = await SmartDeviceController.control_wiz_light("192.168.100.15", palette="fría")
+        assert res_cool["params"]["temp"] == 6500
+
+        # 3. Probar escena relax / fiesta
+        res_relax = await SmartDeviceController.control_wiz_light("192.168.100.15", palette="relax")
+        assert res_relax["params"]["sceneId"] == WIZ_SCENES["relax"]
+
+        # 4. Probar color RGB (rojo)
+        res_red = await SmartDeviceController.control_wiz_light("192.168.100.15", palette="rojo")
+        assert res_red["params"]["r"] == 255
+        assert res_red["params"]["g"] == 0
+
+    asyncio.run(_test())
+
+
+def test_airsys_ac_control():
+    from viernes.iot.smart_lights import SmartDeviceController
+
+    async def _test():
+        res = await SmartDeviceController.control_air_conditioner(
+            "192.168.100.20", power=True, target_temp=23, mode="cool", fan_speed="auto"
+        )
+        assert res["success"] is True
+        assert res["target_temp"] == 23
+        assert res["mode"] == "cool"
+        assert "AIRSYS" in res["message"]
+
+    asyncio.run(_test())
+
+
+def test_dynamic_subnet_detection():
+    from viernes.iot.network_scanner import NetworkScanner
+    scanner = NetworkScanner()
+    subnet = scanner.detect_active_subnet()
+    assert "/24" in subnet
+    assert subnet.count(".") == 3
+

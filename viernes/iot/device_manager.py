@@ -1,6 +1,7 @@
 """
 Gestor de Dispositivos e Inventario de Red para V.I.E.R.N.E.S.
-Mantiene el registro persistente de dispositivos con nombres amigables (ej: "PC Gamer", "Luces").
+Mantiene el registro persistente de dispositivos con nombres amigables (ej: "PC Gamer", "Luz WiZ", "Aire Acondicionado").
+Soporta migración automática de subred (.100.x), control de WiZ (RGB/Kelvin/Paleta) y AIRSYS AC.
 """
 
 import json
@@ -30,38 +31,85 @@ class DeviceManager:
         self._load_devices()
 
     def _load_devices(self):
-        """Carga dispositivos guardados desde JSON."""
+        """Carga dispositivos guardados desde JSON o inicializa defaults para la subred activa."""
+        active_sub_prefix = self.scanner.detect_active_subnet().rsplit(".", 1)[0] # ej: 192.168.100
+
         if os.path.exists(DEVICES_FILE):
             try:
                 with open(DEVICES_FILE, "r", encoding="utf-8") as f:
                     self.devices = json.load(f)
+                
+                # Migración de subred: si la subred activa cambió a .100.x, actualizar defaults antiguos
+                if active_sub_prefix == "192.168.100":
+                    if "luz_wiz" not in self.devices:
+                        self.devices["luz_wiz"] = {
+                            "id": "luz_wiz",
+                            "alias": "Luz WiZ Escritorio",
+                            "ip": "192.168.100.15",
+                            "mac": "",
+                            "type": "wiz_light",
+                            "port": 38899,
+                            "vendor": "WiZ Connected",
+                            "status": "online",
+                            "last_seen": datetime.now().isoformat()
+                        }
+                    if "aire_ac" not in self.devices:
+                        self.devices["aire_ac"] = {
+                            "id": "aire_ac",
+                            "alias": "Aire Acondicionado AIRSYS",
+                            "ip": "192.168.100.20",
+                            "mac": "",
+                            "type": "air_conditioner",
+                            "vendor": "AIRSYS / Tuya Smart Life",
+                            "status": "online",
+                            "last_seen": datetime.now().isoformat()
+                        }
+                    # Si el PC Gamer tenía IP 192.168.1.150, migrarlo a la nueva subred .100.150 si no hay conflicto
+                    if "pc_principal" in self.devices and self.devices["pc_principal"]["ip"].startswith("192.168.1."):
+                        self.devices["pc_principal"]["ip"] = "192.168.100.150"
+                    
+                    self._save_devices()
+                return
             except Exception as e:
                 logger.error(f"Error cargando dispositivos desde {DEVICES_FILE}: {e}")
-        else:
-            # Dispositivos por defecto pre-registrados
-            self.devices = {
-                "pc_principal": {
-                    "id": "pc_principal",
-                    "alias": "Mi PC Gamer",
-                    "ip": "192.168.1.150",
-                    "mac": "00:11:22:33:44:55",
-                    "type": "desktop",
-                    "wol_enabled": True,
-                    "status": "offline",
-                    "last_seen": None,
-                },
-                "luces_escritorio": {
-                    "id": "luces_escritorio",
-                    "alias": "Luces de Escritorio",
-                    "ip": "192.168.1.120",
-                    "mac": "",
-                    "type": "light",
-                    "wol_enabled": False,
-                    "status": "online",
-                    "last_seen": None,
-                }
+
+        # Dispositivos por defecto pre-registrados para la subred activa
+        self.devices = {
+            "pc_principal": {
+                "id": "pc_principal",
+                "alias": "Mi PC Gamer",
+                "ip": f"{active_sub_prefix}.150",
+                "mac": "00:11:22:33:44:55",
+                "type": "desktop",
+                "wol_enabled": True,
+                "status": "offline",
+                "last_seen": None,
+            },
+            "luz_wiz": {
+                "id": "luz_wiz",
+                "alias": "Luz WiZ Escritorio",
+                "ip": "192.168.100.15",
+                "mac": "",
+                "type": "wiz_light",
+                "port": 38899,
+                "vendor": "WiZ Connected",
+                "wol_enabled": False,
+                "status": "online",
+                "last_seen": None,
+            },
+            "aire_ac": {
+                "id": "aire_ac",
+                "alias": "Aire Acondicionado AIRSYS",
+                "ip": f"{active_sub_prefix}.20",
+                "mac": "",
+                "type": "air_conditioner",
+                "vendor": "AIRSYS / Smart Life",
+                "wol_enabled": False,
+                "status": "online",
+                "last_seen": None,
             }
-            self._save_devices()
+        }
+        self._save_devices()
 
     def _save_devices(self):
         try:
@@ -71,15 +119,17 @@ class DeviceManager:
             logger.error(f"Error guardando dispositivos: {e}")
 
     async def scan_and_update(self) -> List[Dict[str, Any]]:
-        """Escanea la red y actualiza el estado y MACs de todos los dispositivos."""
+        """Escanea la red actual y actualiza el estado, MACs y hostnames de los dispositivos."""
         scanned = await self.scanner.scan_active_subnet()
         now = datetime.now().isoformat()
+        active_sub_prefix = self.scanner.subnet.rsplit(".", 1)[0]
 
         # Actualizar dispositivos conocidos con datos escaneados
         for sc in scanned:
             ip = sc["ip"]
             mac = sc["mac"]
             vendor = sc.get("vendor", "")
+            hostname = sc.get("hostname", "")
 
             # Buscar si coincide con algún dispositivo guardado
             matched = False
@@ -90,23 +140,36 @@ class DeviceManager:
                     dev["status"] = "online"
                     dev["last_seen"] = now
                     dev["vendor"] = vendor
+                    if hostname and hostname != "Dispositivo LAN":
+                        dev["hostname"] = hostname
                     matched = True
                     break
 
             if not matched:
                 # Registrar nuevo dispositivo descubierto
                 new_id = f"dev_{mac.replace(':', '')[-6:]}" if mac else f"dev_{ip.replace('.', '_')}"
+                is_wiz = "wiz" in vendor.lower() or "signify" in vendor.lower()
+                is_tuya = "tuya" in vendor.lower() or "espressif" in vendor.lower()
+                
+                dev_type = "wiz_light" if is_wiz else ("light" if is_tuya else "generic")
+                
                 self.devices[new_id] = {
                     "id": new_id,
-                    "alias": sc.get("hostname") or f"Dispositivo ({vendor})",
+                    "alias": hostname if (hostname and hostname != "Dispositivo LAN") else f"Dispositivo ({vendor})",
                     "ip": ip,
                     "mac": mac,
-                    "type": "light" if "yeelight" in vendor.lower() or "tuya" in vendor.lower() else "generic",
+                    "type": dev_type,
                     "vendor": vendor,
                     "status": "online",
                     "last_seen": now,
-                    "wol_enabled": "desktop" in vendor.lower() or "asustek" in vendor.lower() or "gigabyte" in vendor.lower() or "msi" in vendor.lower(),
+                    "wol_enabled": any(k in vendor.lower() for k in ("asustek", "gigabyte", "msi", "asrock", "intel", "desktop")),
                 }
+
+        # Limpiar o marcar offline dispositivos que eran de una subred distinta
+        for dev_id, dev in self.devices.items():
+            dev_ip = dev.get("ip", "")
+            if dev_ip and not dev_ip.startswith(active_sub_prefix):
+                dev["status"] = "stale_other_subnet"
 
         self._save_devices()
         return list(self.devices.values())
@@ -123,7 +186,9 @@ class DeviceManager:
                 return dev
             if ("pc" in q or "computador" in q or "tarro" in q) and dev.get("type") == "desktop":
                 return dev
-            if ("luz" in q or "luces" in q or "lampara" in q) and dev.get("type") == "light":
+            if ("wiz" in q or "luz" in q or "luces" in q or "lampara" in q) and dev.get("type") in ("wiz_light", "light"):
+                return dev
+            if ("aire" in q or "ac" in q or "clima" in q or "airsys" in q) and dev.get("type") == "air_conditioner":
                 return dev
         return None
 
@@ -138,11 +203,39 @@ class DeviceManager:
             target = target_name_or_ip
         return await self.wol.wake_device(target, wait_for_boot=False)
 
-    async def execute_control_light(self, target_name_or_ip: str, state: str, brightness: int = 100) -> Dict[str, Any]:
-        """Enciende/apaga luces por nombre o IP."""
+    async def execute_control_light(
+        self,
+        target_name_or_ip: str,
+        state: str,
+        brightness: int = 100,
+        palette: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Enciende/apaga luces y aplica paletas de color/temperatura."""
         dev = self.get_device_by_name(target_name_or_ip)
         ip = dev.get("ip") if dev else target_name_or_ip
-        return await self.lights.set_light_state(ip, state=state, brightness=brightness)
+        dev_type = dev.get("type", "auto") if dev else "auto"
+        return await self.lights.set_light_state(ip, state=state, brightness=brightness, palette=palette, device_type=dev_type)
+
+    async def execute_get_light_status(self, target_name_or_ip: str = "luz_wiz") -> Dict[str, Any]:
+        """Consulta la paleta y estado actual de la luz WiZ."""
+        dev = self.get_device_by_name(target_name_or_ip)
+        ip = dev.get("ip") if dev else target_name_or_ip
+        return await self.lights.get_wiz_status(ip)
+
+    async def execute_control_ac(
+        self,
+        target_name_or_ip: str = "aire_ac",
+        power: Optional[bool] = None,
+        target_temp: Optional[int] = None,
+        mode: Optional[str] = None,
+        fan_speed: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Controla el Aire Acondicionado AIRSYS / Smart Life."""
+        dev = self.get_device_by_name(target_name_or_ip)
+        ip = dev.get("ip") if dev else target_name_or_ip
+        return await self.lights.control_air_conditioner(
+            ip, power=power, target_temp=target_temp, mode=mode, fan_speed=fan_speed
+        )
 
 
 device_mgr = DeviceManager()
