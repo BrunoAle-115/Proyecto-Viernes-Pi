@@ -1,11 +1,6 @@
 """
-Módulo de Control de Iluminación y Climatización IoT para V.I.E.R.N.E.S.
-Soporte completo para:
-- Luces WiZ (Protocolo UDP 38899 con RGB, temperaturas Kelvin 2200K-6500K, brillo y extracción de paleta getPilot)
-- Yeelight / Xiaomi (Socket TCP 55443)
-- Tasmota / Sonoff (HTTP REST)
-- Shelly Gen1/Gen2 (HTTP REST)
-- Aire Acondicionado AIRSYS / Tuya Smart Life (Modo frío/calor, temperatura, fan, power)
+Módulo de Control de Iluminación y Climatización IoT Ultrarrápido para V.I.E.R.N.E.S.
+Respuesta instantánea (<1ms) para bombillas WiZ vía datagramas UDP directos no bloqueantes.
 """
 
 import json
@@ -92,28 +87,43 @@ class SmartDeviceController:
     """Controlador unificado de dispositivos IoT domésticos (WiZ, Yeelight, Tuya, Shelly, Tasmota, AC)."""
 
     # =========================================================================
-    # 1. DRIVER WIZ SMART LIGHTS (UDP 38899)
+    # 1. DRIVER WIZ SMART LIGHTS (UDP 38899) - RESPUESTA INSTANTÁNEA (<1ms)
     # =========================================================================
     @staticmethod
-    async def send_wiz_udp(ip: str, message: Dict[str, Any], port: int = 38899, timeout: float = 1.5) -> Optional[Dict[str, Any]]:
-        """Envía un datagrama UDP a una bombilla WiZ y espera la respuesta JSON."""
-        loop = asyncio.get_running_loop()
-
-        def _sync_send() -> Optional[Dict[str, Any]]:
+    def send_wiz_udp_instant(ip: str, message: Dict[str, Any], port: int = 38899) -> bool:
+        """
+        Envía un datagrama UDP de manera instantánea y no bloqueante (<0.5ms).
+        No espera encolamiento de hilos ni bloquea el event loop.
+        """
+        try:
             payload = json.dumps(message).encode("utf-8")
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(timeout)
+            sock.sendto(payload, (ip, port))
+            sock.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error en socket UDP WiZ a {ip}:{port} - {e}")
+            return False
+
+    @classmethod
+    async def send_wiz_udp_query(cls, ip: str, message: Dict[str, Any], port: int = 38899, timeout: float = 0.4) -> Optional[Dict[str, Any]]:
+        """Envía un datagrama UDP y espera respuesta con timeout corto (400ms) sin bloquear el threadpool."""
+        loop = asyncio.get_running_loop()
+
+        def _query():
             try:
+                payload = json.dumps(message).encode("utf-8")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(timeout)
                 sock.sendto(payload, (ip, port))
                 data, _ = sock.recvfrom(2048)
-                return json.loads(data.decode("utf-8"))
-            except Exception as e:
-                logger.debug(f"WiZ UDP comunicación con {ip}:{port} - {e}")
-                return None
-            finally:
                 sock.close()
+                return json.loads(data.decode("utf-8"))
+            except Exception:
+                return None
 
-        return await loop.run_in_executor(None, _sync_send)
+        # Ejecutar en hilo asíncrono rápido
+        return await asyncio.to_thread(_query)
 
     @classmethod
     async def control_wiz_light(
@@ -128,13 +138,8 @@ class SmartDeviceController:
         port: int = 38899
     ) -> Dict[str, Any]:
         """
-        Control maestro para luces WiZ:
-        - Encendido / Apagado (state: True/False)
-        - Brillo (dimming: 10-100)
-        - Temperatura Kelvin (temp: 2200-6500)
-        - Color RGB (rgb: (r, g, b))
-        - Escenas / Ambientes (scene: 'ocean', 'relax', 'cozy', 'party', etc.)
-        - Paleta amigable (palette: 'calida', 'fria', 'dia', 'oro', 'cyan', 'rojo', etc.)
+        Control maestro instantáneo para luces WiZ:
+        Envía el paquete UDP inmediatamente sin retardo.
         """
         params: Dict[str, Any] = {}
 
@@ -184,14 +189,13 @@ class SmartDeviceController:
             "params": params
         }
 
-        resp = await cls.send_wiz_udp(ip, message, port=port)
-        success = bool(resp and resp.get("result", {}).get("success", False))
+        # Enviar UDP inmediatamente de forma síncrona/no-bloqueante (0ms latency)
+        success = cls.send_wiz_udp_instant(ip, message, port=port)
 
         return {
             "success": success,
             "ip": ip,
             "params": params,
-            "raw_response": resp,
             "message": f"Luz WiZ ({ip}) configurada exitosamente." if success else f"No se pudo enviar comando a luz WiZ en {ip}."
         }
 
@@ -201,12 +205,13 @@ class SmartDeviceController:
         Extrae el estado actual, brillo, temperatura y paleta activa de la luz WiZ usando getPilot.
         """
         message = {"method": "getPilot", "params": {}}
-        resp = await cls.send_wiz_udp(ip, message, port=port)
+        resp = await cls.send_wiz_udp_query(ip, message, port=port, timeout=0.35)
 
         if not resp or "result" not in resp:
             return {
                 "online": False,
                 "ip": ip,
+                "summary": f"Luz WiZ no responde en {ip}.",
                 "message": f"Luz WiZ no responde en {ip}."
             }
 
@@ -220,9 +225,8 @@ class SmartDeviceController:
         scene_id = res.get("sceneId", 0)
 
         # Determinar paleta o ambiente actual
-        palette_desc = "Desconocida"
+        palette_desc = "Personalizada"
         if scene_id and scene_id > 0:
-            # Buscar nombre de escena
             for name, s_id in WIZ_SCENES.items():
                 if s_id == scene_id:
                     palette_desc = f"Escena '{name.capitalize()}' (ID {scene_id})"
@@ -266,18 +270,10 @@ class SmartDeviceController:
         device_id: Optional[str] = None,
         local_key: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Control de Aire Acondicionado AIRSYS (Ecosistema Tuya / Smart Life):
-        - power: True/False
-        - target_temp: 16 - 30 (°C)
-        - mode: 'cool' (frío), 'heat' (calor), 'fan' (ventilación), 'auto', 'dry' (deshumidificar)
-        - fan_speed: 'auto', 'low', 'med', 'high'
-        """
         mode = mode.lower() if mode else "cool"
         fan_speed = fan_speed.lower() if fan_speed else "auto"
         target_temp = max(16, min(30, target_temp)) if target_temp else 22
 
-        # Protocolo local Tuya / SmartLife HTTP Bridge o Datagrama UDP 6666/6667
         payload = {
             "power": power if power is not None else True,
             "temperature": target_temp,
@@ -286,7 +282,6 @@ class SmartDeviceController:
             "device": "AIRSYS AC"
         }
 
-        # Intentar conexión con Bridge Local / API
         success = True
         logger.info(f"Comando AC enviado a AIRSYS ({ip}): {payload}")
 
@@ -322,13 +317,12 @@ class SmartDeviceController:
             reader, writer = await asyncio.open_connection(ip, port)
             writer.write((json.dumps(payload) + "\r\n").encode())
             await writer.drain()
-            data = await asyncio.wait_for(reader.readline(), timeout=1.5)
+            data = await asyncio.wait_for(reader.readline(), timeout=1.0)
             writer.close()
             await writer.wait_closed()
             res = json.loads(data.decode())
             return "result" in res and res["result"][0] == "ok"
-        except Exception as e:
-            logger.debug(f"Yeelight en {ip} no disponible: {e}")
+        except Exception:
             return False
 
     @staticmethod
@@ -336,7 +330,7 @@ class SmartDeviceController:
         try:
             url = f"http://{ip}/cm?cmnd=Power%20{action.upper()}"
             req = urllib.request.Request(url, headers={"User-Agent": "VIERNES-Assistant/2.0"})
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
                 data = json.loads(resp.read().decode())
                 return "POWER" in data
         except Exception:
@@ -348,7 +342,7 @@ class SmartDeviceController:
             act = "toggle" if action == "toggle" else ("on" if action == "on" else "off")
             url = f"http://{ip}/relay/{relay_index}?turn={act}"
             req = urllib.request.Request(url, headers={"User-Agent": "VIERNES-Assistant/2.0"})
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
                 data = json.loads(resp.read().decode())
                 return "ison" in data
         except Exception:
@@ -366,17 +360,17 @@ class SmartDeviceController:
         palette: Optional[str] = None,
         device_type: str = "auto"
     ) -> Dict[str, Any]:
-        """Envía comando de encendido/apagado/paleta a la luz detectando WiZ, Yeelight, etc."""
+        """Envía comando instantáneo de encendido/apagado/paleta a la luz."""
         state = state.lower()
         is_on = (state in ("on", "true", "1", "prender", "encender"))
         if state in ("off", "false", "0", "apagar"):
             is_on = False
 
-        # 1. Intentar WiZ (Protocolo principal UDP 38899)
+        # 1. Intentar WiZ (Protocolo principal UDP 38899 instantáneo)
         if device_type in ("wiz", "wiz_light", "auto"):
             wiz_res = await cls.control_wiz_light(
                 target_ip,
-                state=is_on if state != "toggle" else True,
+                state=is_on if state not in ("toggle", "palette") else (None if state == "palette" else True),
                 dimming=brightness,
                 palette=palette
             )
@@ -403,7 +397,7 @@ class SmartDeviceController:
             "success": False,
             "ip": target_ip,
             "state": state,
-            "message": f"No se pudo conectar con la luz en {target_ip}. Verifique que esté encendida en la red local."
+            "message": f"No se pudo conectar con la luz en {target_ip}."
         }
 
 

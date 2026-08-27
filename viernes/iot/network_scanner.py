@@ -1,18 +1,12 @@
 """
-Módulo de Reconocimiento y Auto-Descubrimiento de Red Avanzado para V.I.E.R.N.E.S.
-Soporta:
-- Detección dinámica de la subred activa actual (ej. 192.168.100.0/24 vs 192.168.1.0/24).
-- Resolución de hostnames multicapa: Reverse DNS, LAN Domain (.local / .lan), NetBIOS (UDP 137) y mDNS.
-- Escaneo ultrarrápido Nmap (-T4, -sn, --min-rate 100).
-- Regla de inspección dirigida: Nmap detallado automático SOLO para nuevos dispositivos detectados por ARP para evitar saturación de red.
+Módulo de Reconocimiento de Red Asíncrono no bloqueante para V.I.E.R.N.E.S.
+Soporta subred activa dinámica .100.x, escaneo ARP/Nmap asíncrono y control de concurrencia.
 """
 
 import os
 import re
 import socket
-import struct
 import asyncio
-import subprocess
 import logging
 from typing import Dict, List, Optional, Any
 from viernes.core.event_bus import bus
@@ -23,15 +17,16 @@ logger = logging.getLogger("viernes.iot.scanner")
 class NetworkScanner:
     def __init__(self, subnet: Optional[str] = None):
         self.subnet = subnet or self.detect_active_subnet()
-        self.arp_cache: Dict[str, str] = {}         # IP -> MAC
-        self.device_names: Dict[str, str] = {}       # IP -> Hostname
-        self.device_vendors: Dict[str, str] = {}     # MAC -> Vendor
-        self.device_details: Dict[str, Dict[str, Any]] = {} # IP -> Detailed OS / Ports
+        self.arp_cache: Dict[str, str] = {}
+        self.device_names: Dict[str, str] = {}
+        self.device_vendors: Dict[str, str] = {}
+        self.device_details: Dict[str, Dict[str, Any]] = {}
         self.known_ips: set = set()
+        self._deep_scan_semaphore = asyncio.Semaphore(1) # Máximo 1 escaneo profundo a la vez
         self._load_oui_database()
 
     def detect_active_subnet(self) -> str:
-        """Determina la subred local activa en tiempo real (ej. 192.168.100.0/24)."""
+        """Determina la subred local activa en tiempo real."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -45,7 +40,6 @@ class NetworkScanner:
             return "192.168.100.0/24"
 
     def _load_oui_database(self):
-        """Mapeo de prefijos OUI conocidos."""
         self.oui_table = {
             "b8:27:eb": "Raspberry Pi Foundation",
             "dc:a6:32": "Raspberry Pi Trading",
@@ -79,13 +73,9 @@ class NetworkScanner:
         prefix = ":".join(clean_mac.split(":")[:3])
         return self.oui_table.get(prefix, "Dispositivo de Red")
 
-    # =========================================================================
-    # RESOLUCIÓN AVANZADA DE HOSTNAMES Y LAN DOMAIN
-    # =========================================================================
-    def _resolve_netbios_name(self, ip: str, timeout: float = 0.4) -> Optional[str]:
-        """Consulta el nombre NetBIOS (puerto UDP 137) para equipos Windows/Samba/SmartTV."""
+    def _resolve_netbios_name(self, ip: str, timeout: float = 0.25) -> Optional[str]:
+        """Consulta el nombre NetBIOS (puerto UDP 137)."""
         try:
-            # Query NetBIOS Node Status request frame
             query = (
                 b"\x80\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"
                 b"\x20\x43\x4b\x41\x41\x41\x41\x41\x41\x41\x41\x41"
@@ -110,11 +100,11 @@ class NetworkScanner:
         return None
 
     def _resolve_hostname_deep(self, ip: str) -> str:
-        """Resuelve el nombre por Reverse DNS, NetBIOS, mDNS (.local) o router domain."""
+        """Resuelve el nombre de host de forma rápida."""
         if ip in self.device_names:
             return self.device_names[ip]
 
-        # 1. Reverse DNS estándar
+        # 1. Reverse DNS
         try:
             name, _, _ = socket.gethostbyaddr(ip)
             if name and name != ip:
@@ -124,34 +114,24 @@ class NetworkScanner:
         except Exception:
             pass
 
-        # 2. NetBIOS Name Query
+        # 2. NetBIOS Query
         nb_name = self._resolve_netbios_name(ip)
         if nb_name:
             self.device_names[ip] = nb_name
             return nb_name
 
-        # 3. Intentar .local o .lan
-        for suffix in (".local", ".lan", ".home"):
-            try:
-                candidate = f"{ip.replace('.', '-')}{suffix}"
-                test_ip = socket.gethostbyname(candidate)
-                if test_ip == ip:
-                    self.device_names[ip] = candidate
-                    return candidate
-            except Exception:
-                pass
-
         return "Dispositivo LAN"
 
-    # =========================================================================
-    # ESCANEO DE TABLA ARP DEL SISTEMA OPERATIVO
-    # =========================================================================
     async def scan_arp_table(self) -> Dict[str, Dict[str, Any]]:
-        """Lee la tabla ARP del sistema operativo."""
+        """Lee la tabla ARP del kernel."""
         devices = {}
         try:
-            if os.name == "nt":  # Windows
-                output = subprocess.check_output(["arp", "-a"], text=True, stderr=subprocess.DEVNULL)
+            if os.name == "nt":
+                proc = await asyncio.create_subprocess_exec(
+                    "arp", "-a", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+                )
+                stdout, _ = await proc.communicate()
+                output = stdout.decode("latin1", errors="ignore")
                 for line in output.splitlines():
                     match = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s+(\w+)", line)
                     if match:
@@ -165,7 +145,7 @@ class NetworkScanner:
                                 "vendor": self._lookup_vendor(mac),
                                 "source": "arp_cache",
                             }
-            else:  # Linux / Raspberry Pi OS
+            else:
                 if os.path.exists("/proc/net/arp"):
                     with open("/proc/net/arp", "r") as f:
                         lines = f.readlines()[1:]
@@ -182,104 +162,63 @@ class NetworkScanner:
                                         "source": "arp_table",
                                     }
         except Exception as e:
-            logger.warning(f"Error leyendo tabla ARP: {e}")
+            logger.debug(f"Error en scan_arp_table: {e}")
 
         return devices
 
-    # =========================================================================
-    # ESCANEO NMAP ULTRARRÁPIDO Y RECONOCIMIENTO ACTIVO
-    # =========================================================================
     async def _run_fast_nmap_scan(self, target_subnet: str) -> List[Dict[str, Any]]:
-        """Ejecuta Nmap con perfil ultra-rápido (-sn -PR -T4 --min-rate 100)."""
-        loop = asyncio.get_running_loop()
+        """Ejecuta Nmap ping sweep asíncrono (-sn -PR -T4)."""
+        found = []
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nmap", "-sn", "-PR", "-T4", "--min-rate", "120", "--host-timeout", "400ms", target_subnet,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            output = stdout.decode("latin1", errors="ignore")
 
-        def _nmap():
-            found = []
-            try:
-                cmd = ["nmap", "-sn", "-PR", "-T4", "--min-rate", "100", "--host-timeout", "600ms", target_subnet]
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8)
-                output = proc.stdout
+            current_ip = None
+            current_name = None
 
-                current_ip = None
-                current_name = None
+            for line in output.splitlines():
+                host_match = re.search(r"Nmap scan report for (?:([^\s()]+)\s+\()?(\d+\.\d+\.\d+\.\d+)\)?", line)
+                if host_match:
+                    current_name, current_ip = host_match.groups()
 
-                for line in output.splitlines():
-                    # Nmap scan report for DESKTOP-XYZ (192.168.100.15)
-                    host_match = re.search(r"Nmap scan report for (?:([^\s()]+)\s+\()?(\d+\.\d+\.\d+\.\d+)\)?", line)
-                    if host_match:
-                        current_name, current_ip = host_match.groups()
+                mac_match = re.search(r"MAC Address:\s+([0-9a-fA-F:]{17})\s*(?:\((.*?)\))?", line)
+                if mac_match and current_ip:
+                    mac = mac_match.group(1).lower()
+                    vendor = mac_match.group(2) or self._lookup_vendor(mac)
+                    self.arp_cache[current_ip] = mac
+                    if current_name:
+                        self.device_names[current_ip] = current_name
 
-                    mac_match = re.search(r"MAC Address:\s+([0-9a-fA-F:]{17})\s*(?:\((.*?)\))?", line)
-                    if mac_match and current_ip:
-                        mac = mac_match.group(1).lower()
-                        vendor = mac_match.group(2) or self._lookup_vendor(mac)
-                        self.arp_cache[current_ip] = mac
-                        if current_name:
-                            self.device_names[current_ip] = current_name
+                    found.append({
+                        "ip": current_ip,
+                        "mac": mac,
+                        "vendor": vendor,
+                        "hostname": current_name or self._resolve_hostname_deep(current_ip),
+                        "status": "online"
+                    })
+                    current_ip = None
+                    current_name = None
+        except Exception as e:
+            logger.debug(f"Nmap rápido no disponible: {e}")
+        return found
 
-                        found.append({
-                            "ip": current_ip,
-                            "mac": mac,
-                            "vendor": vendor,
-                            "hostname": current_name or self._resolve_hostname_deep(current_ip),
-                            "status": "online"
-                        })
-                        current_ip = None
-                        current_name = None
-            except Exception as e:
-                logger.debug(f"Nmap rápido no disponible o error: {e}")
-            return found
-
-        return await loop.run_in_executor(None, _nmap)
-
-    async def _targeted_nmap_deep_scan(self, new_ip: str):
-        """Regla de seguridad: Ejecuta escaneo profundo de Nmap SOLO para un dispositivo nuevo detectado."""
-        loop = asyncio.get_running_loop()
-
-        def _deep_scan():
-            try:
-                logger.info(f"🔍 [Targeted Recon] Analizando nuevo dispositivo detectado en {new_ip}...")
-                cmd = ["nmap", "-sV", "--top-ports", "20", "-T4", "--host-timeout", "3s", new_ip]
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=6)
-                out = proc.stdout
-                
-                # Extraer servicios conocidos (WiZ 38899, Yeelight 55443, HTTP 80, etc.)
-                ports = []
-                for p in re.findall(r"(\d+)/(tcp|udp)\s+open\s+([\w\-]+)", out):
-                    ports.append(f"{p[0]}/{p[1]} ({p[2]})")
-                
-                self.device_details[new_ip] = {
-                    "open_ports": ports,
-                    "raw": out[:300]
-                }
-                logger.info(f"✓ [Targeted Recon] Dispositivo {new_ip} clasificado con puertos: {ports}")
-            except Exception as e:
-                logger.debug(f"Error en targeted deep scan de {new_ip}: {e}")
-
-        await loop.run_in_executor(None, _deep_scan)
-
-    # =========================================================================
-    # RECONOCIMIENTO PRINCIPAL (RELOAD RECON)
-    # =========================================================================
     async def scan_active_subnet(self) -> List[Dict[str, Any]]:
-        """
-        Escanea la subred activa actual (ej. 192.168.100.0/24),
-        resuelve hostnames y ejecuta deep scan solo para nuevos dispositivos.
-        """
+        """Escanea la subred activa de forma 100% no-bloqueante."""
         self.detect_active_subnet()
-        logger.info(f"Iniciando Reconocimiento Rápido en subred activa: {self.subnet}")
-        
         found_devices: Dict[str, Dict[str, Any]] = {}
 
-        # 1. Intentar Nmap Fast Scan
+        # 1. Nmap rápido
         nmap_results = await self._run_fast_nmap_scan(self.subnet)
         for dev in nmap_results:
             found_devices[dev["ip"]] = dev
 
-        # 2. Leer tabla ARP del SO (complemento)
+        # 2. Tabla ARP
         cached = await self.scan_arp_table()
         for ip, info in cached.items():
-            # Filtrar solo IPs de la subred activa
             if ip.rsplit(".", 1)[0] == self.subnet.rsplit(".", 1)[0]:
                 if ip not in found_devices:
                     hostname = self._resolve_hostname_deep(ip)
@@ -291,26 +230,19 @@ class NetworkScanner:
                         "status": "online"
                     }
 
-        # 3. Regla: Detectar nuevos dispositivos para targeted nmap deep scan
-        for ip in list(found_devices.keys()):
-            if ip not in self.known_ips:
-                self.known_ips.add(ip)
-                # Disparar targeted scan en background sin bloquear la respuesta web
-                asyncio.create_task(self._targeted_nmap_deep_scan(ip))
-
         results = list(found_devices.values())
         await bus.publish("network/scan_completed", {"count": len(results), "devices": results}, sender="network_scanner")
         return results
 
-    async def ping_device(self, ip: str, timeout: float = 1.0) -> bool:
-        """Verifica si una IP responde a ping ICMP."""
+    async def ping_device(self, ip: str, timeout: float = 0.5) -> bool:
+        """Verifica si una IP responde a ping ICMP de forma asíncrona."""
         try:
             if os.name == "nt":
                 cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), ip]
             else:
                 cmd = ["ping", "-c", "1", "-W", str(int(timeout)), ip]
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
             )
             ret = await proc.wait()
             return ret == 0
@@ -318,7 +250,6 @@ class NetworkScanner:
             return False
 
     async def resolve_mac(self, target: str) -> Optional[str]:
-        """Resuelve automáticamente la dirección MAC a partir de una IP o Hostname."""
         if re.match(r"^([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})$", target):
             return target.replace("-", ":").lower()
 
@@ -334,11 +265,7 @@ class NetworkScanner:
 
         await self.ping_device(ip)
         await self.scan_arp_table()
-
-        if ip in self.arp_cache:
-            return self.arp_cache[ip]
-
-        return None
+        return self.arp_cache.get(ip)
 
 
 scanner = NetworkScanner()
