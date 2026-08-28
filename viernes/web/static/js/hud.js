@@ -12,6 +12,9 @@ function escapeHtml(str) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (window.__HUD_INITIALIZED__) return;
+  window.__HUD_INITIALIZED__ = true;
+
   // Elements
   const authOverlay = document.getElementById("auth-modal-overlay");
   const loginEmail = document.getElementById("login-email");
@@ -711,13 +714,19 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   window.loadAllData = loadAllData;
 
-  // 10. Authenticated WebSocket Telemetry & Live Voice Stream (STRICT SINGLETON)
+  //  // 10. AUTHENTICATED WEBSOCKET TELEMETRY & LIVE STREAM (STRICT SINGLETON)
   let ws = null;
   let wsReconnectTimer = null;
+  let wsConnectTimeoutTimer = null;
+  let wsReconnectAttempts = 0;
+  const WS_CONNECT_TIMEOUT_MS = 8000;
+  const WS_BASE_RECONNECT_MS = 1500;
+  const WS_MAX_RECONNECT_MS = 15000;
 
-  function connectWs() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      return;
+  function cleanupPreviousWs() {
+    if (wsConnectTimeoutTimer) {
+      clearTimeout(wsConnectTimeoutTimer);
+      wsConnectTimeoutTimer = null;
     }
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
@@ -729,50 +738,119 @@ document.addEventListener("DOMContentLoaded", () => {
         ws.onmessage = null;
         ws.onerror = null;
         ws.onclose = null;
-        ws.close();
-      } catch (e) {}
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, "Singleton Replacement");
+        }
+      } catch (e) {
+        console.debug("[WS] Error cerrando socket previo:", e);
+      }
       ws = null;
     }
+  }
+
+  function scheduleWsReconnect() {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    const token = authToken || localStorage.getItem("viernes_auth_token");
+    if (!token) return;
+
+    wsReconnectAttempts++;
+    const rawDelay = Math.min(WS_MAX_RECONNECT_MS, WS_BASE_RECONNECT_MS * Math.pow(1.5, wsReconnectAttempts));
+    const jitter = rawDelay * 0.2 * (Math.random() * 2 - 1);
+    const delay = Math.round(rawDelay + jitter);
+
+    wsReconnectTimer = setTimeout(() => {
+      if (document.hidden) return;
+      connectWs();
+    }, delay);
+  }
+
+  function connectWs(force = false) {
+    if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    cleanupPreviousWs();
+
+    const token = authToken || localStorage.getItem("viernes_auth_token");
+    if (!token) return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const tokenQuery = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
-    const activeWs = new WebSocket(`${protocol}//${window.location.host}/ws${tokenQuery}`);
+    const tokenQuery = `?token=${encodeURIComponent(token)}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws${tokenQuery}`;
+
+    let activeWs;
+    try {
+      activeWs = new WebSocket(wsUrl);
+    } catch (err) {
+      console.error("[WS] Error al instanciar WebSocket:", err);
+      scheduleWsReconnect();
+      return;
+    }
+
     ws = activeWs;
 
+    wsConnectTimeoutTimer = setTimeout(() => {
+      if (activeWs === ws && activeWs.readyState === WebSocket.CONNECTING) {
+        console.warn("[WS] Timeout de conexión (8s). Reintentando...");
+        cleanupPreviousWs();
+        scheduleWsReconnect();
+      }
+    }, WS_CONNECT_TIMEOUT_MS);
+
+    activeWs.onopen = () => {
+      if (activeWs !== ws) return;
+      if (wsConnectTimeoutTimer) {
+        clearTimeout(wsConnectTimeoutTimer);
+        wsConnectTimeoutTimer = null;
+      }
+      wsReconnectAttempts = 0;
+      appendLog("WS", "Enlace cuántico de telemetría y voz establecido.", "log-success");
+    };
+
     activeWs.onmessage = (event) => {
-      if (activeWs !== ws) return; // Descartar mensajes de sockets obsoletos
+      if (activeWs !== ws) return;
       try {
         const msg = JSON.parse(event.data);
 
         // 1. Telemetría de hardware
         if (msg.type === "telemetry") {
           const t = msg.data;
-          const newTemp = `${t.cpu.temperature_c}°C`;
-          if (cpuTemp.textContent !== newTemp) cpuTemp.textContent = newTemp;
-          const newLoad = `${Math.round(t.cpu.percent)}%`;
-          if (cpuLoad.textContent !== newLoad) cpuLoad.textContent = newLoad;
-          const newRam = `${Math.round(t.ram.percent)}%`;
-          if (ramUsage.textContent !== newRam) ramUsage.textContent = newRam;
-          const newIp = `IP: ${escapeHtml(t.local_ip)}`;
-          if (hostIp.textContent !== newIp) hostIp.textContent = newIp;
+          if (cpuTemp) {
+            const newTemp = `${t.cpu.temperature_c}°C`;
+            if (cpuTemp.textContent !== newTemp) cpuTemp.textContent = newTemp;
+          }
+          if (cpuLoad) {
+            const newLoad = `${Math.round(t.cpu.percent)}%`;
+            if (cpuLoad.textContent !== newLoad) cpuLoad.textContent = newLoad;
+          }
+          if (ramUsage) {
+            const newRam = `${Math.round(t.ram.percent)}%`;
+            if (ramUsage.textContent !== newRam) ramUsage.textContent = newRam;
+          }
+          if (hostIp) {
+            const newIp = `IP: ${escapeHtml(t.local_ip)}`;
+            if (hostIp.textContent !== newIp) hostIp.textContent = newIp;
+          }
 
-          // Si el audio local no está sobreescribiendo el RMS, usar el del servidor
           if (!window._isLocalAudioActive) {
             currentAudioRms = t.audio_rms || 0.02;
           }
           const newSpeaking = t.is_speaking || false;
           if (isSpeaking !== newSpeaking && !window._isLiveAudioPlaying) {
             isSpeaking = newSpeaking;
-            if (isSpeaking) {
+            if (isSpeaking && voiceStateTag) {
               voiceStateTag.textContent = "TRANSMITIENDO VOZ";
               voiceStateTag.style.color = "var(--gold-stark)";
-            } else if (!window._isLiveSessionActive) {
+            } else if (!window._isLiveSessionActive && voiceStateTag) {
               voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
               voiceStateTag.style.color = "var(--cyan-stark)";
             }
           }
         }
-        // 2. Chunks de audio PCM 24kHz desde Gemini Live WebSocket
+        // 2. Chunks de audio PCM 24kHz desde Gemini Live
         else if (msg.type === "audio_out" && msg.data) {
           if (window.liveAudioPlayer) {
             window.liveAudioPlayer.playChunk(msg.data);
@@ -795,14 +873,14 @@ document.addEventListener("DOMContentLoaded", () => {
             voiceStateTag.style.color = "var(--cyan-stark)";
           }
         }
-        // 5. Transcripción o respuestas de texto
+        // 5. Transcripciones y respuestas
         else if (msg.type === "model_text" && msg.text) {
           appendLog("VIERNES", msg.text, "log-system");
         }
         else if (msg.type === "prompt_response" && msg.response) {
           appendLog("VIERNES", msg.response, "log-system");
         }
-        // 6. Eventos del EventBus
+        // 6. EventBus
         else if (msg.type === "event") {
           if (msg.topic === "ai/text_response" && msg.data?.text) {
             appendLog("VIERNES", msg.data.text, "log-system");
@@ -815,13 +893,22 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     };
 
-    activeWs.onclose = () => {
-      if (activeWs === ws) {
-        ws = null;
-        if (authToken) {
-          wsReconnectTimer = setTimeout(connectWs, 3000);
-        }
+    activeWs.onerror = (err) => {
+      if (activeWs !== ws) return;
+      console.warn("[WS] Error en canal WebSocket:", err);
+    };
+
+    activeWs.onclose = (event) => {
+      if (activeWs !== ws) return;
+      ws = null;
+      if (wsConnectTimeoutTimer) {
+        clearTimeout(wsConnectTimeoutTimer);
+        wsConnectTimeoutTimer = null;
       }
+      if (event.code === 1000 && event.reason === "User Logout") {
+        return;
+      }
+      scheduleWsReconnect();
     };
   }
   window.connectWs = connectWs;
@@ -915,7 +1002,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- GEMINI LIVE MULTIMODAL DUPLEX AUDIO ENGINE (STARK INDUSTRIES) ---
   // =========================================================================
 
-  // 1. REPRODUCTOR DE AUDIO EN TIEMPO REAL (PCM 16-BIT 24kHz -> WEBAUDIO DAC)
+  // =========================================================================
+  // --- GEMINI LIVE MULTIMODAL DUPLEX AUDIO ENGINE (STARK INDUSTRIES) ---
+  // =========================================================================
+
+  // 1. REPRODUCTOR DE AUDIO EN TIEMPO REAL CON JITTER BUFFER ADAPTATIVO
+  // Decodificador PCM 16-bit Little-Endian 24kHz -> Web Audio DAC
   class LiveAudioPlayer {
     constructor(options = {}) {
       this.sourceSampleRate = options.sourceSampleRate || 24000;
@@ -925,9 +1017,12 @@ document.addEventListener("DOMContentLoaded", () => {
       this.activeSources = new Set();
       this.leftoverBytes = null;
       this.isPlaying = false;
-      this.leadTime = 0.020; // 20ms jitter buffer óptimo para absorber jitter sin desfase
+      
+      // Jitter Buffer & Parámetros Temporales Óptimos
+      this.leadTime = options.leadTime || 0.050; // 50ms pre-roll óptimo para absorber jitter de red
+      this.maxBufferAhead = options.maxBufferAhead || 1.5; // 1.5s límite de resguardo contra latencia acumulativa
       this.lastAudioEndTime = 0;
-      this.hangoverDurationMs = 100; // 100ms protección acústica anti-reverberación
+      this.hangoverDurationMs = 150; // 150ms protección acústica anti-eco post-reproducción
       this.playbackDebounceTimer = null;
     }
 
@@ -948,14 +1043,33 @@ document.addEventListener("DOMContentLoaded", () => {
     async unlock() {
       this.initContext();
       if (this.audioCtx && this.audioCtx.state === "suspended") {
-        await this.audioCtx.resume();
+        try {
+          await this.audioCtx.resume();
+        } catch (e) {
+          console.warn("[LiveAudioPlayer] No se pudo reanudar AudioContext:", e);
+        }
       }
     }
 
+    /**
+     * Determina si el sistema está activamente emitiendo audio o en ventana de resguardo acústico.
+     * Crucial para evitar que el micrófono reinyecte la voz de la IA al WebSocket.
+     */
     isAudioActivelyPlaying() {
-      if (this.activeSources.size > 0 || window._isLiveAudioPlaying) return true;
-      const now = performance.now();
-      return (now - this.lastAudioEndTime) < this.hangoverDurationMs;
+      if (!this.audioCtx || this.audioCtx.state !== "running") {
+        window._isLiveAudioPlaying = false;
+        return false;
+      }
+      const nowCtx = this.audioCtx.currentTime;
+      if (this.activeSources.size > 0 || nowCtx < this.nextStartTime) {
+        return true;
+      }
+      const nowPerf = performance.now();
+      if ((nowPerf - this.lastAudioEndTime) < this.hangoverDurationMs) {
+        return true;
+      }
+      window._isLiveAudioPlaying = false;
+      return false;
     }
 
     playChunk(base64Data) {
@@ -971,12 +1085,12 @@ document.addEventListener("DOMContentLoaded", () => {
           this.playbackDebounceTimer = null;
         }
 
-        // 1. Decodificación Base64
+        // 1. Decodificación Base64 a datos binarios
         const binaryStr = atob(base64Data);
         const incomingLen = binaryStr.length;
         if (incomingLen === 0) return;
 
-        // 2. Concatenación de bytes residuales (alineación 16-bit Little-Endian)
+        // 2. Concatenación de bytes residuales para preservar alineación de 16 bits (2 bytes/muestra)
         let totalBytes;
         if (this.leftoverBytes && this.leftoverBytes.length > 0) {
           totalBytes = new Uint8Array(this.leftoverBytes.length + incomingLen);
@@ -1002,19 +1116,19 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (numSamples === 0) return;
 
-        // 3. Conversión Little-Endian PCM 16-bit a Float32
+        // 3. Decodificación PCM 16-bit Little-Endian a Float32 [-1.0, 1.0]
         const dataView = new DataView(totalBytes.buffer, totalBytes.byteOffset, processableBytes);
         const float32 = new Float32Array(numSamples);
         let sumSquares = 0;
 
         for (let i = 0; i < numSamples; i++) {
-          const int16 = dataView.getInt16(i * 2, true);
+          const int16 = dataView.getInt16(i * 2, true); // true = Little-Endian
           const s = int16 < 0 ? int16 / 32768.0 : int16 / 32767.0;
           float32[i] = s;
           sumSquares += s * s;
         }
 
-        // 4. Modulación HUD / Arc Reactor (Dorado Stark)
+        // 4. Telemetría RMS para visualización en HUD / Arc Reactor (Dorado Stark)
         const rms = Math.sqrt(sumSquares / numSamples);
         currentAudioRms = Math.min(0.95, Math.max(0.1, rms * 4.2));
         window._isLiveAudioPlaying = true;
@@ -1024,21 +1138,24 @@ document.addEventListener("DOMContentLoaded", () => {
           voiceStateTag.style.color = "var(--gold-stark)";
         }
 
-        // 5. Creación del AudioBuffer
+        // 5. Creación del AudioBuffer nativo a 24000 Hz
         const audioBuffer = ctx.createBuffer(1, numSamples, this.sourceSampleRate);
         audioBuffer.getChannelData(0).set(float32);
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
 
-        // Asegurar que la ganancia esté al 100% activa
+        // 6. Asegurar ganancia persistente en 1.0
         if (this.gainNode) {
+          this.gainNode.gain.cancelScheduledValues(now);
           this.gainNode.gain.setValueAtTime(1.0, now);
         }
         source.connect(this.gainNode);
 
-        // 6. Scheduling Temporal Continuo Estricto (Timeline Secuencial FIFO Sin Solapamiento)
+        // 7. Jitter Buffer Adaptativo & Scheduling Continuo FIFO
         if (this.nextStartTime < now) {
+          this.nextStartTime = now + this.leadTime;
+        } else if (this.nextStartTime > now + this.maxBufferAhead) {
           this.nextStartTime = now + this.leadTime;
         }
 
@@ -1046,10 +1163,14 @@ document.addEventListener("DOMContentLoaded", () => {
         source.start(scheduledStartTime);
         this.nextStartTime += audioBuffer.duration;
 
+        // 8. Registro y ciclo de vida de la fuente de audio
         this.activeSources.add(source);
         source.onended = () => {
-          try { source.disconnect(); } catch (e) {}
+          try {
+            source.disconnect();
+          } catch (e) {}
           this.activeSources.delete(source);
+
           if (this.activeSources.size === 0) {
             this.lastAudioEndTime = performance.now();
             this.playbackDebounceTimer = setTimeout(() => {
@@ -1062,31 +1183,38 @@ document.addEventListener("DOMContentLoaded", () => {
                   voiceStateTag.style.color = "var(--cyan-stark)";
                 }
               }
-            }, 50);
+            }, 60);
           }
         };
       } catch (err) {
-        console.error("[LiveAudioPlayer] Error procesando chunk:", err);
+        console.error("[LiveAudioPlayer] Error procesando chunk de audio:", err);
       }
     }
 
+    /**
+     * Interrupción inmediata y limpia (Barge-In).
+     * Detiene todas las fuentes encoladas, limpia buffers y resetea el reloj de scheduling.
+     */
     stopAll() {
       if (this.playbackDebounceTimer) {
         clearTimeout(this.playbackDebounceTimer);
         this.playbackDebounceTimer = null;
       }
       this.leftoverBytes = null;
-      this.lastAudioEndTime = performance.now();
+      this.lastAudioEndTime = 0;
+
       if (this.audioCtx) {
         const now = this.audioCtx.currentTime;
         for (const src of this.activeSources) {
           try {
+            src.onended = null;
             src.stop(now);
             src.disconnect();
           } catch (e) {}
         }
         this.activeSources.clear();
         this.nextStartTime = 0;
+
         if (this.gainNode) {
           try {
             this.gainNode.gain.cancelScheduledValues(now);
@@ -1097,6 +1225,7 @@ document.addEventListener("DOMContentLoaded", () => {
         this.activeSources.clear();
         this.nextStartTime = 0;
       }
+
       window._isLiveAudioPlaying = false;
       isSpeaking = false;
       currentAudioRms = 0.02;
@@ -1114,7 +1243,9 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("pointerdown", unlockUserGesture, { once: true, passive: true });
   window.addEventListener("keydown", unlockUserGesture, { once: true, passive: true });
 
-  // 2. CAPTURADOR DE AUDIO CON FILTRADO ACÚSTICO, NOISE GATE Y RESAMPLE CONTINUO
+  // =========================================================================
+  // 2. CAPTURADOR DE AUDIO CON AES, BARGE-IN (RMS > 0.14) Y RESAMPLE CONTINUO
+  // =========================================================================
   class LiveAudioRecorder {
     constructor(onChunkCallback, onRmsCallback) {
       this.onChunk = onChunkCallback;
@@ -1134,7 +1265,7 @@ document.addEventListener("DOMContentLoaded", () => {
       this.resamplePos = 0;
       this.lastSample = 0;
 
-      this.BARGE_IN_RMS_THRESHOLD = 0.13; // Umbral de energía para interrumpir deliberadamente a la IA
+      this.BARGE_IN_RMS_THRESHOLD = 0.14; // Umbral de energía para interrumpir deliberadamente a la IA
       this.bargeInConsecutiveFrames = 0;
     }
 
@@ -1165,16 +1296,17 @@ document.addEventListener("DOMContentLoaded", () => {
           await this.audioCtx.resume();
         }
 
+        // Calibración estricta de constraints de audio para aislamiento acústico
         this.mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: false,
+            autoGainControl: false, // CRÍTICO: Evita amplificación artificial del audio de los altavoces
             googEchoCancellation: true,
             googAutoGainControl: false,
             googNoiseSuppression: true,
-            googHighpassFilter: true
+            googHighpassFilter: true // Filtra vibraciones de chasis (<80Hz)
           }
         });
 
@@ -1188,20 +1320,25 @@ document.addEventListener("DOMContentLoaded", () => {
           const channel = e.inputBuffer.getChannelData(0);
           const inLen = channel.length;
 
-          // 1. RMS instantáneo
+          // 1. RMS instantáneo del bloque
           let sumSq = 0;
           for (let i = 0; i < inLen; i += 2) sumSq += channel[i] * channel[i];
           const rms = Math.sqrt(sumSq / (inLen / 2));
           if (this.onRms) this.onRms(rms);
 
-          // 2. Supresión de Eco Acústico y Ducking
+          // 2. Acoustic Echo Suppression (AES) & Ducking / Detección de Barge-In
           const isAiSpeaking = window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying();
           if (isAiSpeaking) {
             if (rms > this.BARGE_IN_RMS_THRESHOLD) {
               this.bargeInConsecutiveFrames++;
+              // 2 frames consecutivos (~40-60ms) para confirmar habla humana intencional
               if (this.bargeInConsecutiveFrames >= 2) {
-                window.liveAudioPlayer.stopAll();
+                if (window.liveAudioPlayer) {
+                  window.liveAudioPlayer.stopAll();
+                }
                 this.bargeInConsecutiveFrames = 0;
+              } else {
+                return;
               }
             } else {
               this.bargeInConsecutiveFrames = 0;
@@ -1211,8 +1348,7 @@ document.addEventListener("DOMContentLoaded", () => {
             this.bargeInConsecutiveFrames = 0;
           }
 
-          // 3. Dynamic Noise Gate & Resample lineal continuo:
-          // 3. Resample lineal continuo con preservación estricta de límites de fase
+          // 3. Resample lineal continuo a 16kHz y fragmentación en chunks
           let pos = this.resamplePos;
           while (pos < inLen - 1) {
             let s;
@@ -1294,7 +1430,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // =========================================================================
   // 3. GESTIÓN DE SESIÓN DE VOZ EN VIVO (MANOS LIBRES / CONVERSACIONAL)
+  // =========================================================================
   window._isLiveSessionActive = false;
   window._isLocalAudioActive = false;
   window._isLiveAudioPlaying = false;
@@ -1305,7 +1443,6 @@ document.addEventListener("DOMContentLoaded", () => {
       if (window.liveAudioPlayer && window.liveAudioPlayer.isAudioActivelyPlaying()) {
         return;
       }
-      // Enviar frame de audio PCM 16kHz regulado (100ms) al WebSocket
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "audio_in",
@@ -1324,52 +1461,63 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   );
 
+  let isTogglingVoice = false;
+
   async function toggleLiveVoiceSession() {
-    if (window._isLiveSessionActive) {
-      // Detener sesión
-      liveAudioRecorder.stop();
-      window._isLiveSessionActive = false;
-      window.liveAudioPlayer.stopAll();
+    if (isTogglingVoice) return;
+    isTogglingVoice = true;
 
-      if (btnTalkMic) {
-        btnTalkMic.classList.remove("is-listening");
-        const txt = btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic;
-        if (txt) txt.textContent = "HABLAR CON V.I.E.R.N.E.S.";
-      }
-      if (voiceStateTag) {
-        voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
-        voiceStateTag.style.color = "var(--cyan-stark)";
-      }
-      appendLog("VOZ", "Sesión de voz en vivo pausada.", "log-info");
-    } else {
-      // Iniciar sesión y desbloquear audio
-      await window.liveAudioPlayer.unlock();
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "start_live_session" }));
-      } else {
-        connectWs();
-      }
-
-      const ok = await liveAudioRecorder.start();
-      if (ok) {
-        window._isLiveSessionActive = true;
-        StarkAudio.playSuccess();
+    try {
+      if (window._isLiveSessionActive) {
+        // Detener sesión
+        liveAudioRecorder.stop();
+        window._isLiveSessionActive = false;
+        window.liveAudioPlayer.stopAll();
 
         if (btnTalkMic) {
-          btnTalkMic.classList.add("is-listening");
+          btnTalkMic.classList.remove("is-listening");
           const txt = btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic;
-          if (txt) txt.textContent = "🔴 CONVERSACIÓN EN VIVO (HABLANDO)";
+          if (txt) txt.textContent = "HABLAR CON V.I.E.R.N.E.S.";
         }
         if (voiceStateTag) {
-          voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // TE ESCUCHO...";
+          voiceStateTag.textContent = "EN ESPERA // 'OYE VIERNES'";
           voiceStateTag.style.color = "var(--cyan-stark)";
         }
-        appendLog("VOZ", "🎙️ Transmisión de voz en vivo activada: Habla naturalmente con V.I.E.R.N.E.S.", "log-success");
+        appendLog("VOZ", "Sesión de voz en vivo pausada.", "log-info");
       } else {
-        appendLog("VOZ", "No se pudo acceder al micrófono. Verifica los permisos del navegador.", "log-warn");
-        StarkAudio.playAlert();
+        // Iniciar sesión y desbloquear audio
+        await window.liveAudioPlayer.unlock();
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "start_live_session" }));
+        } else {
+          connectWs();
+        }
+
+        const ok = await liveAudioRecorder.start();
+        if (ok) {
+          window._isLiveSessionActive = true;
+          StarkAudio.playSuccess();
+
+          if (btnTalkMic) {
+            btnTalkMic.classList.add("is-listening");
+            const txt = btnTalkMic.querySelector(".btn-mic-text") || btnTalkMic.querySelector("span") || btnTalkMic;
+            if (txt) txt.textContent = "🔴 CONVERSACIÓN EN VIVO (HABLANDO)";
+          }
+          if (voiceStateTag) {
+            voiceStateTag.textContent = "🔴 CONVERSACIÓN EN VIVO // TE ESCUCHO...";
+            voiceStateTag.style.color = "var(--cyan-stark)";
+          }
+          appendLog("VOZ", "🎙️ Transmisión de voz en vivo activada: Habla naturalmente con V.I.E.R.N.E.S.", "log-success");
+        } else {
+          appendLog("VOZ", "No se pudo acceder al micrófono. Verifica los permisos del navegador.", "log-warn");
+          StarkAudio.playAlert();
+        }
       }
+    } finally {
+      setTimeout(() => {
+        isTogglingVoice = false;
+      }, 250);
     }
   }
 

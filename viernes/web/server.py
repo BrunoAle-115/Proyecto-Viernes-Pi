@@ -120,36 +120,101 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class ConnectionManager:
+    """
+    Gestor de conexiones WebSocket centralizado y blindado para V.I.E.R.N.E.S. 2.0.
+    
+    Características clave:
+    1. Anti-Zombie / Sesión Única: Cierra conexiones previas (código 1000) si se reconecta la misma sesión.
+    2. Voice Master Exclusivo: 'audio_out' se envía mediante Unicast estricto únicamente al socket
+       que está interactuando por voz (emisor de 'audio_in' o 'start_live_session').
+    3. Broadcast Seguro para Telemetría y Texto: La telemetría y eventos del bus no acústicos
+       se distribuyen a todos los HUDs sin saturar ni duplicar el audio.
+    """
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.session_to_socket: Dict[str, WebSocket] = {}
+        self.socket_to_session: Dict[WebSocket, str] = {}
         self.active_voice_ws: Optional[WebSocket] = None
+        self.active_voice_session_id: Optional[str] = None
+        self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, session_id: str):
+        """Acepta la conexión WebSocket y desaloja conexiones zombis previas de la misma sesión."""
         await websocket.accept()
-        self.active_connections.append(websocket)
-        if self.active_voice_ws is None:
-            self.active_voice_ws = websocket
 
-    def disconnect(self, websocket: WebSocket):
+        async with self._lock:
+            # 1. Si ya existía un socket activo para la misma sesión/token, desalojarlo de inmediato
+            old_ws = self.session_to_socket.get(session_id)
+            if old_ws and old_ws != websocket:
+                logger.info(f"🔄 Desalojando conexión WebSocket zombi previa para sesión: {session_id[:10]}...")
+                try:
+                    await old_ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="Superseeded by new connection")
+                except Exception as ex:
+                    logger.debug(f"Aviso al cerrar socket zombi: {ex}")
+                self._remove_socket_internal(old_ws)
+
+            # 2. Registrar el nuevo socket
+            if websocket not in self.active_connections:
+                self.active_connections.append(websocket)
+            self.session_to_socket[session_id] = websocket
+            self.socket_to_session[websocket] = session_id
+
+            # 3. Si no hay Voice Master o el anterior era el socket desalojado, asignar el nuevo
+            if self.active_voice_ws is None or self.active_voice_ws == old_ws:
+                self.active_voice_ws = websocket
+                self.active_voice_session_id = session_id
+
+    def set_voice_master(self, websocket: WebSocket):
+        """Asocia el WebSocket emisor de audio_in como el Voice Master exclusivo."""
+        if websocket in self.active_connections:
+            self.active_voice_ws = websocket
+            self.active_voice_session_id = self.socket_to_session.get(websocket)
+
+    def _remove_socket_internal(self, websocket: WebSocket):
+        """Limpieza atómica de registros internos de un socket."""
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        session_id = self.socket_to_session.pop(websocket, None)
+        if session_id and self.session_to_socket.get(session_id) == websocket:
+            self.session_to_socket.pop(session_id, None)
+
         if self.active_voice_ws == websocket:
-            self.active_voice_ws = self.active_connections[0] if self.active_connections else None
+            if self.active_connections:
+                self.active_voice_ws = self.active_connections[-1]
+                self.active_voice_session_id = self.socket_to_session.get(self.active_voice_ws)
+            else:
+                self.active_voice_ws = None
+                self.active_voice_session_id = None
 
-    async def broadcast(self, message: Dict[str, Any]):
-        if not self.active_connections:
-            return
+    def disconnect(self, websocket: WebSocket):
+        """Desconecta y limpia los registros del WebSocket."""
+        self._remove_socket_internal(websocket)
 
-        async def _safe_send(ws: WebSocket):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                self.disconnect(ws)
+    async def send_voice_audio(self, message: Dict[str, Any]):
+        """
+        Envía chunks de audio ('audio_out') ÚNICA Y EXCLUSIVAMENTE al Voice Master actual.
+        Nunca hace broadcast para evitar duplicación de audio, eco robótico y cancelaciones de fase.
+        """
+        target_ws = self.active_voice_ws
+        if not target_ws:
+            if len(self.active_connections) == 1:
+                target_ws = self.active_connections[0]
+                self.active_voice_ws = target_ws
+            else:
+                return
 
-        await asyncio.gather(*[_safe_send(conn) for conn in list(self.active_connections)], return_exceptions=True)
+        try:
+            await target_ws.send_json(message)
+        except Exception as ex:
+            logger.debug(f"Fallo al transmitir audio a Voice Master: {ex}")
+            self.disconnect(target_ws)
 
     async def broadcast_audio(self, message: Dict[str, Any]):
-        """Envía el stream de audio a todas las conexiones WebSocket activas."""
+        """Alias compatible con send_voice_audio para envío unicast de audio."""
+        await self.send_voice_audio(message)
+
+    async def broadcast(self, message: Dict[str, Any]):
+        """Envía mensajes de telemetría y eventos informativos a todas las conexiones activas."""
         if not self.active_connections:
             return
 
@@ -171,7 +236,8 @@ async def on_system_event(event: Event):
         return
 
     if event.topic == "ai/audio_chunk":
-        await ws_manager.broadcast_audio({
+        # Unicast estricto al Voice Master actual (Zero-Duplication)
+        await ws_manager.send_voice_audio({
             "type": "audio_out",
             "data": event.data.get("data"),
             "mimeType": event.data.get("mimeType", "audio/pcm;rate=24000")
@@ -762,7 +828,8 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await ws_manager.connect(websocket)
+    # Conectar y asociar a la sesión del token, desalojando conexiones zombis previas
+    await ws_manager.connect(websocket, session_id=auth_token)
 
     async def _send_telemetry_loop():
         try:
@@ -790,6 +857,8 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
                     m_type = payload.get("type")
 
                     if m_type == "audio_in":
+                        # Consagrar este socket como Voice Master exclusivo
+                        ws_manager.set_voice_master(websocket)
                         # Chunks de audio PCM 16kHz en Base64 directo (Zero-Wait Streaming sub-1ms)
                         b64_pcm = payload.get("data")
                         if b64_pcm:
@@ -797,7 +866,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
 
                     elif m_type == "start_live_session":
                         logger.info("🎙️ Sesión de voz dúplex activada desde el HUD.")
-                        ws_manager.active_voice_ws = websocket
+                        ws_manager.set_voice_master(websocket)
                         if not gemini_client.is_connected:
                             await gemini_client.connect()
                         await websocket.send_json({"type": "session_status", "status": "active"})
