@@ -1019,8 +1019,7 @@ document.addEventListener("DOMContentLoaded", () => {
       this.isPlaying = false;
       
       // Jitter Buffer & Parámetros Temporales Óptimos
-      this.leadTime = options.leadTime || 0.050; // 50ms pre-roll óptimo para absorber jitter de red
-      this.maxBufferAhead = options.maxBufferAhead || 1.5; // 1.5s límite de resguardo contra latencia acumulativa
+      this.leadTime = options.leadTime || 0.050; // 50ms pre-roll inicial
       this.lastAudioEndTime = 0;
       this.hangoverDurationMs = 150; // 150ms protección acústica anti-eco post-reproducción
       this.playbackDebounceTimer = null;
@@ -1152,10 +1151,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         source.connect(this.gainNode);
 
-        // 7. Jitter Buffer Adaptativo & Scheduling Continuo FIFO
+        // 7. Jitter Buffer Adaptativo & Scheduling Continuo FIFO (100% Secuencial Sin Solapamiento)
         if (this.nextStartTime < now) {
-          this.nextStartTime = now + this.leadTime;
-        } else if (this.nextStartTime > now + this.maxBufferAhead) {
           this.nextStartTime = now + this.leadTime;
         }
 
