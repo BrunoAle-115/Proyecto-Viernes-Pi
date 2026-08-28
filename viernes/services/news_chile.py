@@ -16,36 +16,36 @@ from datetime import datetime
 
 logger = logging.getLogger("viernes.services.news")
 
+import time
+
 # ---------------------------------------------------------------------------
-# FUENTES DE NOTICIAS NACIONALES (T13, BioBío, Emol)
+# FUENTES DE NOTICIAS NACIONALES DE CHILE ACTIVAS Y VERIFICADAS
 # ---------------------------------------------------------------------------
 CHILE_NEWS_SOURCES = [
     {
-        "name": "T13",
-        "url": "https://www.t13.cl/rss",
+        "name": "Google Noticias Chile (Nacional)",
+        "url": "https://news.google.com/rss/headlines/section/topic/NATION?hl=es-419&gl=CL&ceid=CL:es-419",
         "default_cat": "Nacional"
     },
     {
-        "name": "BioBioChile",
-        "url": "https://www.biobiochile.cl/rss/categorias/nacional.xml",
+        "name": "La Tercera",
+        "url": "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml",
         "default_cat": "Nacional"
     },
     {
-        "name": "BioBioChile",
-        "url": "https://www.biobiochile.cl/rss/categorias/politica.xml",
-        "default_cat": "Política"
-    },
-    {
-        "name": "Emol",
-        "url": "https://www.emol.com/rss/nacional.xml",
+        "name": "Cooperativa",
+        "url": "https://www.cooperativa.cl/noticias/site/tax/port/all/rss____1.xml",
         "default_cat": "Nacional"
     },
     {
-        "name": "Emol",
-        "url": "https://www.emol.com/rss/portada.xml",
+        "name": "Google Noticias Chile (Portada)",
+        "url": "https://news.google.com/rss?hl=es-419&gl=CL&ceid=CL:es-419",
         "default_cat": "Nacional"
     }
 ]
+
+_news_cache_time: float = 0.0
+_news_cache_data: List[Dict[str, Any]] = []
 
 # ---------------------------------------------------------------------------
 # LISTA NEGRA: 100% FILTRO DEPORTIVO Y FÚTBOL
@@ -162,15 +162,18 @@ def _evaluate_gravity_and_category(title: str, description: str, default_cat: st
 
 class ChileNewsEngine:
     @staticmethod
-    def _fetch_rss(url: str, source_name: str, default_cat: str = "Nacional", max_items: int = 5) -> List[Dict[str, Any]]:
+    def _fetch_rss(url: str, source_name: str, default_cat: str = "Nacional", max_items: int = 6) -> List[Dict[str, Any]]:
         """Descarga y parsea un feed RSS aplicando el filtro anti-deportes y cálculo de gravedad."""
         items = []
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VIERNES-ExecutiveNews/2.0"}
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/rss+xml, application/xml, text/xml, */*"
+                }
             )
-            with urllib.request.urlopen(req, timeout=4) as response:
+            with urllib.request.urlopen(req, timeout=3) as response:
                 content = response.read()
 
                 try:
@@ -217,12 +220,17 @@ class ChileNewsEngine:
 
     @classmethod
     async def get_top_news(cls, limit: int = 6) -> List[Dict[str, Any]]:
-        """Obtiene las noticias nacionales más graves y prioritarias de T13, BioBío y Emol."""
+        """Obtiene las noticias nacionales más prioritarias de Chile con caché en memoria de 5 min."""
+        global _news_cache_time, _news_cache_data
+        now_mono = time.monotonic()
+        if _news_cache_data and (now_mono - _news_cache_time < 300.0):
+            return _news_cache_data[:limit]
+
         loop = asyncio.get_running_loop()
         tasks = []
         for src in CHILE_NEWS_SOURCES:
             tasks.append(loop.run_in_executor(
-                None, cls._fetch_rss, src["url"], src["name"], src.get("default_cat", "Nacional"), 4
+                None, cls._fetch_rss, src["url"], src["name"], src.get("default_cat", "Nacional"), 5
             ))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -244,20 +252,20 @@ class ChileNewsEngine:
         if not all_news:
             all_news = [
                 {
-                    "source": "BioBioChile",
+                    "source": "Google Noticias Chile",
                     "title": "Gobierno y Congreso definen agenda legislativa prioritaria en seguridad y economía",
                     "description": "Se discuten medidas para el fortalecimiento del orden público e incentivo al empleo nacional.",
-                    "link": "https://www.biobiochile.cl",
+                    "link": "https://news.google.com",
                     "category": "Política",
                     "gravity_score": 50,
                     "score": 50,
                     "pub_date": datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT")
                 },
                 {
-                    "source": "Emol",
+                    "source": "La Tercera",
                     "title": "Banco Central y Ministerio de Hacienda monitorean indicadores macroeconómicos y tipo de cambio",
                     "description": "Nuevas proyecciones para el control de la inflación y crecimiento del PIB.",
-                    "link": "https://www.emol.com",
+                    "link": "https://www.latercera.com",
                     "category": "Economía",
                     "gravity_score": 45,
                     "score": 45,
@@ -265,6 +273,8 @@ class ChileNewsEngine:
                 }
             ]
 
+        _news_cache_time = now_mono
+        _news_cache_data = all_news
         return all_news[:limit]
 
     @classmethod
