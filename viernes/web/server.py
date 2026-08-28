@@ -149,18 +149,17 @@ class ConnectionManager:
         await asyncio.gather(*[_safe_send(conn) for conn in list(self.active_connections)], return_exceptions=True)
 
     async def broadcast_audio(self, message: Dict[str, Any]):
-        """Envía el stream de audio exclusivamente al socket de voz activo o a las conexiones sin duplicación."""
+        """Envía el stream de audio a todas las conexiones WebSocket activas."""
         if not self.active_connections:
             return
 
-        target_ws = self.active_voice_ws if self.active_voice_ws in self.active_connections else (self.active_connections[0] if self.active_connections else None)
-        if target_ws:
+        async def _safe_send(ws: WebSocket):
             try:
-                await target_ws.send_json(message)
+                await ws.send_json(message)
             except Exception:
-                self.disconnect(target_ws)
-        else:
-            await self.broadcast(message)
+                self.disconnect(ws)
+
+        await asyncio.gather(*[_safe_send(conn) for conn in list(self.active_connections)], return_exceptions=True)
 
 
 ws_manager = ConnectionManager()

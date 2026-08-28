@@ -1030,6 +1030,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
+
+        // Asegurar que la ganancia esté al 100% activa
+        if (this.gainNode) {
+          this.gainNode.gain.setValueAtTime(1.0, now);
+        }
         source.connect(this.gainNode);
 
         // 6. Scheduling Temporal Continuo Estricto (Timeline Secuencial FIFO Sin Solapamiento)
@@ -1074,30 +1079,20 @@ document.addEventListener("DOMContentLoaded", () => {
       this.lastAudioEndTime = performance.now();
       if (this.audioCtx) {
         const now = this.audioCtx.currentTime;
-        if (this.gainNode) {
-          try {
-            this.gainNode.gain.cancelScheduledValues(now);
-            this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, now);
-            this.gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.003);
-          } catch (e) {}
-        }
         for (const src of this.activeSources) {
           try {
-            src.stop(now + 0.003);
-            setTimeout(() => { try { src.disconnect(); } catch (e) {} }, 5);
+            src.stop(now);
+            src.disconnect();
           } catch (e) {}
         }
         this.activeSources.clear();
         this.nextStartTime = 0;
-        setTimeout(() => {
-          if (this.gainNode && this.audioCtx) {
-            try {
-              const resumeNow = this.audioCtx.currentTime;
-              this.gainNode.gain.cancelScheduledValues(resumeNow);
-              this.gainNode.gain.setValueAtTime(1.0, resumeNow);
-            } catch (e) {}
-          }
-        }, 6);
+        if (this.gainNode) {
+          try {
+            this.gainNode.gain.cancelScheduledValues(now);
+            this.gainNode.gain.setValueAtTime(1.0, now);
+          } catch (e) {}
+        }
       } else {
         this.activeSources.clear();
         this.nextStartTime = 0;
