@@ -1265,7 +1265,7 @@ document.addEventListener("DOMContentLoaded", () => {
       this.resamplePos = 0;
       this.lastSample = 0;
 
-      this.BARGE_IN_RMS_THRESHOLD = 0.14; // Umbral de energía para interrumpir deliberadamente a la IA
+      this.BARGE_IN_RMS_THRESHOLD = 0.08; // Umbral óptimo de energía vocal para interrumpir deliberadamente a la IA
       this.bargeInConsecutiveFrames = 0;
     }
 
@@ -1350,9 +1350,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
           // 3. Resample lineal continuo a 16kHz y fragmentación en chunks
           let pos = this.resamplePos;
+          const isSilenceFloor = rms < 0.003; // Piso de ruido ambiente silenciado limpiamente
+
           while (pos < inLen - 1) {
             let s;
-            if (pos < 0) {
+            if (isSilenceFloor) {
+              s = 0.0;
+            } else if (pos < 0) {
               const frac = pos + 1;
               s = this.lastSample + frac * (channel[0] - this.lastSample);
             } else {
