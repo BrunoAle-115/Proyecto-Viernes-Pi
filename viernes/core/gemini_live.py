@@ -170,10 +170,7 @@ class GeminiLiveClient:
                             }
                         }
                     },
-                    "temperature": 0.4,
-                    "thinkingConfig": {
-                        "thinkingBudget": 0
-                    }
+                    "temperature": 0.4
                 },
                 "systemInstruction": {
                     "parts": [{"text": VIERNES_SYSTEM_PROMPT}]

@@ -1217,15 +1217,11 @@ document.addEventListener("DOMContentLoaded", () => {
           }
 
           // 3. Dynamic Noise Gate & Resample lineal continuo:
-          // Si la señal es ruido de fondo ambiental/ventilador (RMS < 0.010), silenciar a 0x0000 para que el VAD de Google detecte el fin de turno de habla de forma instantánea (<150ms).
-          const isBackgroundNoise = rms < 0.010;
-
+          // 3. Resample lineal continuo con preservación estricta de límites de fase
           let pos = this.resamplePos;
           while (pos < inLen - 1) {
             let s;
-            if (isBackgroundNoise) {
-              s = 0.0;
-            } else if (pos < 0) {
+            if (pos < 0) {
               const frac = pos + 1;
               s = this.lastSample + frac * (channel[0] - this.lastSample);
             } else {
