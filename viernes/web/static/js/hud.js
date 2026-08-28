@@ -925,11 +925,10 @@ document.addEventListener("DOMContentLoaded", () => {
       this.activeSources = new Set();
       this.leftoverBytes = null;
       this.isPlaying = false;
-      this.leadTime = 0.025; // 25ms jitter buffer óptimo para absorber jitter sin desfase
+      this.leadTime = 0.020; // 20ms jitter buffer óptimo para absorber jitter sin desfase
       this.lastAudioEndTime = 0;
-      this.hangoverDurationMs = 250; // 250ms de protección acústica anti-reverberación
+      this.hangoverDurationMs = 100; // 100ms protección acústica anti-reverberación
       this.playbackDebounceTimer = null;
-      this.recentSignatures = new Set();
     }
 
     initContext() {
@@ -961,17 +960,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     playChunk(base64Data) {
       if (!base64Data) return;
-
-      // 0. Deduplicación Estricta de Chunks
-      const sig = base64Data.slice(0, 48) + base64Data.slice(-24);
-      if (this.recentSignatures.has(sig)) {
-        return; // Frame ya programado o duplicado por red/conexión múltiple
-      }
-      this.recentSignatures.add(sig);
-      if (this.recentSignatures.size > 200) {
-        const first = this.recentSignatures.values().next().value;
-        this.recentSignatures.delete(first);
-      }
 
       try {
         this.initContext();
@@ -1069,7 +1057,7 @@ document.addEventListener("DOMContentLoaded", () => {
                   voiceStateTag.style.color = "var(--cyan-stark)";
                 }
               }
-            }, 80);
+            }, 50);
           }
         };
       } catch (err) {
